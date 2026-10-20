@@ -29,6 +29,17 @@ const els = {
   ctx: $("ctx"),
   settings: $("settings"),
   settingsBtn: $("settings-btn"),
+  tabMessages: $("tab-messages"),
+  tabFiles: $("tab-files"),
+  filesCount: $("files-count"),
+  filesView: $("files"),
+  mediaGrid: $("media-grid"),
+  docList: $("doc-list"),
+  mediaCount: $("media-count"),
+  docsCount: $("docs-count"),
+  mediaSection: $("files-media-section"),
+  docsSection: $("files-docs-section"),
+  filesEmpty: $("files-empty"),
 };
 
 // ---------- Local preferences (this device only) ----------
@@ -110,6 +121,14 @@ const STRINGS = {
     renameDevice: "rename device",
     resetName: "restore name",
     notifyBlocked: "notifications are blocked in this browser",
+    messagesTab: "messages",
+    filesTab: "files",
+    mediaTab: "images & videos",
+    docsTab: "documents",
+    noFiles: "No files in this chat yet.",
+    close: "close",
+    previous: "previous",
+    next: "next",
   },
   es: {
     placeholder: "escribe, pega o suelta archivos",
@@ -161,6 +180,14 @@ const STRINGS = {
     renameDevice: "renombrar dispositivo",
     resetName: "restaurar nombre",
     notifyBlocked: "las notificaciones están bloqueadas en este navegador",
+    messagesTab: "mensajes",
+    filesTab: "archivos",
+    mediaTab: "imágenes y vídeos",
+    docsTab: "documentos",
+    noFiles: "Todavía no hay archivos en este chat.",
+    close: "cerrar",
+    previous: "anterior",
+    next: "siguiente",
   },
 };
 const lang = prefs.lang !== "auto" ? prefs.lang : navigator.language?.toLowerCase().startsWith("es") ? "es" : "en";
@@ -212,6 +239,8 @@ const state = {
   devices: [],
   active: new Set(),
   aliases: {}, // tailnet name -> display name
+  view: "messages", // or "files"
+  files: [], // file messages of the current chat, newest first
 };
 
 const displayName = (device) => state.aliases[device] || device;
@@ -335,7 +364,7 @@ function renderMessage(m) {
     if (isImage(f)) {
       const img = el("img", { src: fileURL(f), alt: f.name, loading: "lazy", decoding: "async" });
       img.addEventListener("load", keepPinned);
-      img.addEventListener("click", () => openLightbox(fileURL(f)));
+      img.addEventListener("click", () => openGallery(m.id));
       bubble = el("div", { class: "bubble media" }, img);
       actions.append(el("button", { type: "button", onclick: () => copyImage(f, bubble) }, t.copyImage));
     } else if (isVideo(f)) {
@@ -432,6 +461,10 @@ function addMessages(list) {
 }
 
 function removeMessage(id) {
+  if (state.files.some((m) => m.id === id)) {
+    state.files = state.files.filter((m) => m.id !== id);
+    renderFiles();
+  }
   if (!state.msgs.delete(id)) return;
   state.nodes.delete(id);
   render();
@@ -555,8 +588,11 @@ function selectChat(id) {
   state.hasMore = true;
   state.stick = true;
   els.messages.replaceChildren();
+  state.files = [];
+  renderFiles();
   renderChats();
   syncLatest().catch(console.error);
+  loadFiles();
   if (!coarse) els.input.focus();
 }
 
@@ -874,6 +910,7 @@ function connect() {
       state.aliases = aliases;
       state.nodes.clear();
       await syncLatest();
+      loadFiles();
       loadDevices();
     } catch (err) {
       console.error(err);
@@ -884,6 +921,10 @@ function connect() {
     const m = JSON.parse(e.data);
     touchChat(m);
     notify(m);
+    if (m.kind === "file" && m.chat_id === state.chat && !state.files.some((x) => x.id === m.id)) {
+      state.files.unshift(m);
+      renderFiles();
+    }
     const pinned = nearBottom() || (state.me && m.device === state.me.device);
     if (addMessages([m])) {
       render();
@@ -957,7 +998,10 @@ function uploadOne(chat, file, item, bar) {
     xhr.addEventListener("load", () => {
       if (xhr.status === 201) {
         item.remove();
-        if (addMessages(JSON.parse(xhr.responseText))) render();
+        const created = JSON.parse(xhr.responseText);
+        for (const m of created) if (m.chat_id === state.chat && !state.files.some((x) => x.id === m.id)) state.files.unshift(m);
+        renderFiles();
+        if (addMessages(created)) render();
         scrollToBottom();
       } else {
         fail(xhr.status === 413 ? t.tooLarge(formatSize(state.maxUpload)) : t.uploadFailed);
@@ -1041,16 +1085,197 @@ function toast(text, error = false) {
   toastTimer = setTimeout(() => (els.toast.hidden = true), error ? 3500 : 1200);
 }
 
-function openLightbox(src) {
-  const box = el("div", { class: "lightbox" }, el("img", { src }));
-  const close = () => {
-    box.remove();
-    document.removeEventListener("keydown", onKey);
+// ---------- Files view ----------
+
+const isMedia = (f) => isImage(f) || isVideo(f);
+
+let filesTimer;
+function loadFiles() {
+  clearTimeout(filesTimer);
+  filesTimer = setTimeout(async () => {
+    const chat = state.chat;
+    if (chat == null) return;
+    try {
+      const files = await getJSON(`/api/chats/${chat}/files`);
+      if (chat !== state.chat) return;
+      state.files = files;
+      renderFiles();
+    } catch (err) {
+      console.error(err);
+    }
+  }, 150);
+}
+
+function setView(view) {
+  state.view = view;
+  els.tabMessages.classList.toggle("current", view === "messages");
+  els.tabFiles.classList.toggle("current", view === "files");
+  els.tabMessages.setAttribute("aria-selected", view === "messages");
+  els.tabFiles.setAttribute("aria-selected", view === "files");
+  els.log.hidden = view !== "messages";
+  els.filesView.hidden = view !== "files";
+  if (view === "files") loadFiles();
+  else keepPinned();
+}
+els.tabMessages.addEventListener("click", () => setView("messages"));
+els.tabFiles.addEventListener("click", () => setView("files"));
+
+async function deleteMessage(id) {
+  await request("DELETE", `/api/messages/${id}`).catch(() => {});
+  removeMessage(id);
+}
+
+function renderFiles() {
+  const media = state.files.filter((m) => isMedia(m.file));
+  const docs = state.files.filter((m) => !isMedia(m.file));
+  els.filesCount.textContent = state.files.length ? String(state.files.length) : "";
+  els.mediaCount.textContent = String(media.length);
+  els.docsCount.textContent = String(docs.length);
+  els.mediaSection.hidden = !media.length;
+  els.docsSection.hidden = !docs.length;
+  els.filesEmpty.hidden = state.files.length > 0;
+
+  els.mediaGrid.replaceChildren(
+    ...media.map((m) => {
+      const f = m.file;
+      const thumb = isImage(f)
+        ? el("img", { src: fileURL(f), alt: f.name, loading: "lazy", decoding: "async" })
+        : el("video", { src: fileURL(f), preload: "metadata", muted: "", playsinline: "" });
+      const tile = el(
+        "div",
+        { class: "tile", title: f.name, tabindex: "0" },
+        thumb,
+        isVideo(f) ? el("span", { class: "badge" }, "▶ video") : null,
+        el(
+          "div",
+          { class: "tile-actions" },
+          el("span", { class: "who" }, displayName(m.device)),
+          el(
+            "span",
+            { class: "mini" },
+            el("a", { href: fileURL(f, true), download: f.name, onclick: (e) => e.stopPropagation(), title: t.download }, "↓"),
+            confirmButton("×", "¿?", "", () => deleteMessage(m.id)),
+          ),
+        ),
+      );
+      tile.addEventListener("click", () => openGallery(m.id));
+      tile.addEventListener("keydown", (e) => e.key === "Enter" && openGallery(m.id));
+      return tile;
+    }),
+  );
+
+  els.docList.replaceChildren(
+    ...docs.map((m) => {
+      const f = m.file;
+      const ext = (f.name.match(/\.([a-z0-9]{1,5})$/i)?.[1] ?? "file").slice(0, 4);
+      return el(
+        "li",
+        { class: "doc" },
+        el("span", { class: "ficon" }, ext),
+        el("a", { class: "name", href: fileURL(f, true), download: f.name, title: f.name }, f.name),
+        el("span", { class: "meta who" }, `${displayName(m.device)} · ${shortWhen(new Date(m.created_at))}`),
+        el("span", { class: "meta" }, formatSize(f.size)),
+        el(
+          "span",
+          { class: "mini" },
+          el("a", { href: fileURL(f, true), download: f.name }, t.download),
+          confirmButton(t.delete, t.confirmDelete, "", () => deleteMessage(m.id)),
+        ),
+      );
+    }),
+  );
+}
+
+// ---------- Gallery ----------
+
+// Every image and video of the current chat we know of, oldest first.
+function galleryItems() {
+  const byId = new Map();
+  for (const m of state.files) if (isMedia(m.file)) byId.set(m.id, m);
+  for (const m of state.msgs.values()) if (m.kind === "file" && isMedia(m.file)) byId.set(m.id, m);
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+function openGallery(id) {
+  let items = galleryItems();
+  let i = Math.max(0, items.findIndex((m) => m.id === id));
+
+  const stage = el("div", { class: "stage" });
+  const prev = el("button", { type: "button", class: "nav prev", title: `${t.previous} (←)`, "aria-label": t.previous }, "<");
+  const next = el("button", { type: "button", class: "nav next", title: `${t.next} (→)`, "aria-label": t.next }, ">");
+  const closeBtn = el("button", { type: "button", class: "close", title: `${t.close} (esc)`, "aria-label": t.close }, "×");
+  const caption = el("div", { class: "caption" });
+  const box = el("div", { class: "lightbox", role: "dialog", "aria-modal": "true" }, stage, prev, next, closeBtn, caption);
+
+  function show() {
+    const m = items[i];
+    if (!m) return close();
+    const f = m.file;
+    const media = isImage(f)
+      ? el("img", { src: fileURL(f), alt: f.name })
+      : el("video", { src: fileURL(f), controls: "", autoplay: "", playsinline: "" });
+    stage.replaceChildren(media);
+    prev.disabled = i === 0;
+    next.disabled = i === items.length - 1;
+    caption.replaceChildren(
+      el("span", { class: "pos" }, `${i + 1} / ${items.length}`),
+      el("span", { class: "name", title: f.name }, f.name),
+      el("span", {}, `${displayName(m.device)} · ${shortWhen(new Date(m.created_at))} · ${formatSize(f.size)}`),
+      el("a", { href: fileURL(f, true), download: f.name }, t.download),
+      isImage(f) ? el("button", { type: "button", onclick: () => copyImage(f) }, t.copyImage) : null,
+    );
+    // Warm the neighbours so arrowing through is instant.
+    for (const n of [items[i - 1], items[i + 1]]) if (n && isImage(n.file)) new Image().src = fileURL(n.file);
+  }
+  const go = (d) => {
+    const j = i + d;
+    if (j < 0 || j >= items.length) return;
+    i = j;
+    show();
   };
-  const onKey = (e) => e.key === "Escape" && close();
-  box.addEventListener("click", close);
-  document.addEventListener("keydown", onKey);
+  function close() {
+    box.remove();
+    document.removeEventListener("keydown", onKey, true);
+  }
+  function onKey(e) {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft") go(-1);
+    else if (e.key === "ArrowRight") go(1);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  prev.addEventListener("click", () => go(-1));
+  next.addEventListener("click", () => go(1));
+  closeBtn.addEventListener("click", close);
+  // A click on the dark backdrop closes; clicks on the media don't.
+  stage.addEventListener("click", (e) => e.target === stage && close());
+  let x0 = null;
+  stage.addEventListener("touchstart", (e) => (x0 = e.touches[0].clientX), { passive: true });
+  stage.addEventListener("touchend", (e) => {
+    if (x0 == null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+  });
+  document.addEventListener("keydown", onKey, true);
   document.body.append(box);
+  show();
+
+  // The list may grow once the chat's full file list arrives.
+  if (!state.files.length) {
+    getJSON(`/api/chats/${state.chat}/files`)
+      .then((files) => {
+        state.files = files;
+        renderFiles();
+        const current = items[i]?.id;
+        items = galleryItems();
+        i = Math.max(0, items.findIndex((m) => m.id === current));
+        if (box.isConnected) show();
+      })
+      .catch(console.error);
+  }
 }
 
 // ---------- Composer ----------

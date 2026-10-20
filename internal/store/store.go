@@ -260,6 +260,16 @@ func (s *Store) List(ctx context.Context, chat, before int64, limit int) ([]*Mes
 	return msgs, nil
 }
 
+// Files returns the file messages of a chat, newest first.
+func (s *Store) Files(ctx context.Context, chat int64) ([]*Message, error) {
+	rows, err := s.db.QueryContext(ctx,
+		selectMessages+` WHERE m.chat_id = ? AND m.kind = 'file' ORDER BY m.id DESC LIMIT 5000`, chat)
+	if err != nil {
+		return nil, err
+	}
+	return scanMessages(rows)
+}
+
 func scanMessages(rows *sql.Rows) ([]*Message, error) {
 	defer rows.Close()
 	var msgs []*Message

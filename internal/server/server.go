@@ -54,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/chats/{chat}/messages", s.handleList)
 	mux.HandleFunc("POST /api/chats/{chat}/messages", s.handleText)
 	mux.HandleFunc("POST /api/chats/{chat}/files", s.handleFiles)
+	mux.HandleFunc("GET /api/chats/{chat}/files", s.handleListFiles)
 	mux.HandleFunc("DELETE /api/messages/{id}", s.handleDelete)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /f/{id}/{name}", s.handleDownload)
@@ -160,6 +161,22 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish("delete", map[string]int64{"id": id, "chat_id": m.ChatID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	chat, ok := chatID(w, r)
+	if !ok {
+		return
+	}
+	msgs, err := s.Store.Files(r.Context(), chat)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if msgs == nil {
+		msgs = []*store.Message{}
+	}
+	writeJSON(w, http.StatusOK, msgs)
 }
 
 // handleFiles accepts a multipart body with one or more "file" parts and

@@ -357,3 +357,15 @@ func TestSettingsAndAliases(t *testing.T) {
 		t.Fatalf("settings = %+v", got)
 	}
 }
+
+func TestListFiles(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"not a file"}`)
+	body, ctype := multipartBody(t, nil, map[string]string{"a.png": "png", "b.pdf": "pdf"})
+	http.Post(ts.URL+"/api/chats/1/files", ctype, body)
+	var files []store.Message
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/chats/1/files", "").Body).Decode(&files)
+	if len(files) != 2 || files[0].ID < files[1].ID || files[0].File == nil {
+		t.Fatalf("files = %+v", files)
+	}
+}
