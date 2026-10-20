@@ -254,3 +254,25 @@ func TestSettingsAliasesRetention(t *testing.T) {
 		t.Fatalf("usage = %+v", u)
 	}
 }
+
+func TestExpireFiles(t *testing.T) {
+	s, dir := open(t)
+	ctx := context.Background()
+	m, _ := s.AddFile(ctx, 1, laptop, "old.zip", "application/zip", strings.NewReader("zip"), 10)
+	s.AddText(ctx, 1, laptop, "keep me")
+	time.Sleep(5 * time.Millisecond)
+	n, err := s.ExpireFilesOlderThan(ctx, time.Now())
+	if err != nil || n != 1 {
+		t.Fatalf("expired %d, %v", n, err)
+	}
+	msgs, _ := s.List(ctx, 1, 0, 10)
+	if len(msgs) != 2 || msgs[0].Kind != KindExpired || msgs[0].Body != "old.zip" || msgs[0].File != nil || msgs[1].Body != "keep me" {
+		t.Fatalf("after expiry: %+v %+v", msgs[0], msgs[1])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files", m.File.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("file still on disk")
+	}
+	if files, _ := s.Files(ctx, 1); len(files) != 0 {
+		t.Fatalf("expired file still listed")
+	}
+}

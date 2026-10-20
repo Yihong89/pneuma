@@ -95,6 +95,42 @@ func (s *Store) Usage(ctx context.Context) (Usage, error) {
 	return u, err
 }
 
+// ExpireFilesOlderThan deletes the files uploaded before t but keeps their
+// messages as KindExpired, so the history shows what was there. It returns
+// how many files were removed.
+func (s *Store) ExpireFilesOlderThan(ctx context.Context, t time.Time) (int64, error) {
+	cutoff := t.UnixMilli()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id, f.id, f.name FROM messages m JOIN files f ON f.id = m.file_id WHERE m.created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	type expired struct {
+		msg        int64
+		file, name string
+	}
+	var list []expired
+	for rows.Next() {
+		var e expired
+		if err := rows.Scan(&e.msg, &e.file, &e.name); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		list = append(list, e)
+	}
+	rows.Close()
+	for _, e := range list {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE messages SET kind = ?, body = ?, file_id = NULL WHERE id = ?`, string(KindExpired), e.name, e.msg); err != nil {
+			return 0, err
+		}
+		if err := s.removeFiles(ctx, []string{e.file}); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(list)), nil
+}
+
 // DeleteOlderThan removes every message (and its file) created before t.
 // It returns how many messages were removed.
 func (s *Store) DeleteOlderThan(ctx context.Context, t time.Time) (int64, error) {

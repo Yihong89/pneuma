@@ -9,8 +9,10 @@ import (
 
 // Event is something that happened that every client should know about.
 type Event struct {
-	Type string // "message", "delete", "chat", "chat_delete", "presence"
+	Type string // "message", "delete", "chat", "chat_delete", "presence", ...
 	Data []byte // JSON payload
+	// Audience limits delivery to these devices; empty means everyone.
+	Audience []string
 }
 
 // Hub is a simple broadcaster. Slow subscribers drop events instead of
@@ -75,7 +77,10 @@ func (h *Hub) Active() []string {
 func (h *Hub) Publish(e Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.subs {
+	for ch, device := range h.subs {
+		if len(e.Audience) > 0 && !slices.Contains(e.Audience, device) {
+			continue
+		}
 		select {
 		case ch <- e:
 		default:

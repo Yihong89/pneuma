@@ -1,6 +1,6 @@
 // Caches the app shell so pneuma opens instantly (and installs as a PWA).
 // Messages and files always come from the network.
-const CACHE = "pneuma-shell-v5";
+const CACHE = "pneuma-shell-v6";
 const SHELL = ["/", "/app.js", "/style.css", "/manifest.webmanifest", "/icons/logo.svg", "/fonts/jetbrains-mono-400.woff2", "/fonts/jetbrains-mono-700.woff2", "/fonts/bytesized.woff2"];
 
 self.addEventListener("install", (e) => {

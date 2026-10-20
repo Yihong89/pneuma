@@ -47,10 +47,7 @@
           <button type="button" role="tab" class="tab current" id="tab-messages" data-t="messagesTab"></button>
           <button type="button" role="tab" class="tab" id="tab-files"><span data-t="filesTab"></span><span class="count" id="files-count"></span></button>
         </nav>
-        <div class="chat-tools">
-          <button type="button" class="tool" id="rename-chat" data-t="rename"></button>
-          <button type="button" class="tool danger" id="delete-chat" data-t="delete"></button>
-        </div>
+        <div class="chat-members" id="chat-members" hidden></div>
       </header>
 
       <div class="log" id="log" aria-live="polite">
@@ -117,6 +114,12 @@
 
       <section>
         <h3 data-t="allDevices"></h3>
+        <label class="row"><span data-t="fileRetention"></span>
+          <select id="set-file-retention">
+            <option value="0" data-t="forever"></option>
+            <option value="7">7 d</option><option value="30">30 d</option><option value="90">90 d</option><option value="365">365 d</option>
+          </select>
+        </label>
         <label class="row"><span data-t="retention"></span>
           <select id="set-retention">
             <option value="0" data-t="forever"></option>

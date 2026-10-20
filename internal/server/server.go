@@ -51,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/chats", s.handleCreateChat)
 	mux.HandleFunc("PATCH /api/chats/{chat}", s.handleRenameChat)
 	mux.HandleFunc("DELETE /api/chats/{chat}", s.handleDeleteChat)
+	mux.HandleFunc("POST /api/chats/{chat}/members", s.handleAddMember)
 	mux.HandleFunc("GET /api/chats/{chat}/messages", s.handleList)
 	mux.HandleFunc("POST /api/chats/{chat}/messages", s.handleText)
 	mux.HandleFunc("POST /api/chats/{chat}/files", s.handleFiles)
@@ -99,10 +100,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	chat, ok := chatID(w, r)
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
+	chat := c.ID
 	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	msgs, err := s.Store.List(r.Context(), chat, before, limit)
@@ -117,10 +119,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleText(w http.ResponseWriter, r *http.Request) {
-	chat, ok := chatID(w, r)
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
+	chat := c.ID
 	var req struct {
 		Text string `json:"text"`
 	}
@@ -141,7 +144,7 @@ func (s *Server) handleText(w http.ResponseWriter, r *http.Request) {
 		storeError(w, r, err)
 		return
 	}
-	s.publishMessage(m)
+	s.publishMessage(c, m)
 	writeJSON(w, http.StatusCreated, m)
 }
 
@@ -152,6 +155,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := s.Store.Get(r.Context(), id)
+	var c *store.Chat
+	if err == nil {
+		c, err = s.chatFor(r, m.ChatID)
+	}
 	if err == nil {
 		err = s.Store.Delete(r.Context(), id)
 	}
@@ -159,15 +166,16 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		storeError(w, r, err)
 		return
 	}
-	s.publish("delete", map[string]int64{"id": id, "chat_id": m.ChatID})
+	s.publishTo(c.Members, "delete", map[string]int64{"id": id, "chat_id": m.ChatID})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	chat, ok := chatID(w, r)
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
+	chat := c.ID
 	msgs, err := s.Store.Files(r.Context(), chat)
 	if err != nil {
 		serverError(w, err)
@@ -182,11 +190,11 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 // handleFiles accepts a multipart body with one or more "file" parts and
 // streams each straight to disk.
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	chat, ok := chatID(w, r)
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
-	msgs, _, err := s.receiveMultipart(w, r, chat)
+	msgs, _, err := s.receiveMultipart(w, r, c)
 	if err != nil {
 		uploadError(w, err)
 		return
@@ -203,13 +211,18 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 //
 // Shares land in the most recently active chat.
 func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
-	chats, err := s.Store.Chats(r.Context())
+	chats, err := s.visibleChats(r)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	chat := chats[0].ID
-	_, fields, err := s.receiveMultipart(w, r, chat)
+	if len(chats) == 0 {
+		http.Error(w, "no chat to share into", http.StatusConflict)
+		return
+	}
+	c := chats[0]
+	chat := c.ID
+	_, fields, err := s.receiveMultipart(w, r, c)
 	if err != nil {
 		uploadError(w, err)
 		return
@@ -226,7 +239,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 			serverError(w, err)
 			return
 		}
-		s.publishMessage(m)
+		s.publishMessage(c, m)
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -244,7 +257,8 @@ func containedIn(xs []string, v string) bool {
 
 // receiveMultipart stores every file part as a message and returns the
 // (small) non-file form fields.
-func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request, chat int64) ([]*store.Message, map[string]string, error) {
+func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request, c *store.Chat) ([]*store.Message, map[string]string, error) {
+	chat := c.ID
 	limit := s.maxUpload(r.Context())
 	r.Body = http.MaxBytesReader(w, r.Body, limit+1<<20)
 	mr, err := r.MultipartReader()
@@ -290,13 +304,21 @@ func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request, chat i
 		if err != nil {
 			return msgs, fields, err
 		}
-		s.publishMessage(m)
+		s.publishMessage(c, m)
 		msgs = append(msgs, m)
 	}
 	return msgs, fields, nil
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	chat, err := s.Store.FileChat(r.Context(), r.PathValue("id"))
+	if err == nil {
+		_, err = s.chatFor(r, chat)
+	}
+	if err != nil {
+		storeError(w, r, err)
+		return
+	}
 	f, fh, err := s.Store.OpenFile(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -380,25 +402,71 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) publishMessage(m *store.Message) { s.publish("message", m) }
+func (s *Server) publishMessage(c *store.Chat, m *store.Message) {
+	s.publishTo(c.Members, "message", m)
+}
 
 func (s *Server) publishPresence() {
 	s.publish("presence", map[string][]string{"active": s.Hub.Active()})
 }
 
-func (s *Server) publish(typ string, v any) {
+func (s *Server) publish(typ string, v any) { s.publishTo(nil, typ, v) }
+
+// publishTo sends an event only to the given devices (everyone if empty).
+func (s *Server) publishTo(audience []string, typ string, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		log.Printf("marshal %s event: %v", typ, err)
 		return
 	}
-	s.Hub.Publish(hub.Event{Type: typ, Data: data})
+	s.Hub.Publish(hub.Event{Type: typ, Data: data, Audience: audience})
+}
+
+// chatFor loads a chat and checks the requesting device may see it. Chats
+// it can't see are reported as not found, so their existence doesn't leak.
+func (s *Server) chatFor(r *http.Request, id int64) (*store.Chat, error) {
+	c, err := s.Store.Chat(r.Context(), id)
+	if err != nil {
+		return nil, err
+	}
+	if !c.Visible(ident.SenderFrom(r.Context()).Device) {
+		return nil, store.ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *Server) visibleChat(w http.ResponseWriter, r *http.Request) (*store.Chat, bool) {
+	id, ok := chatID(w, r)
+	if !ok {
+		return nil, false
+	}
+	c, err := s.chatFor(r, id)
+	if err != nil {
+		storeError(w, r, err)
+		return nil, false
+	}
+	return c, true
+}
+
+func (s *Server) visibleChats(r *http.Request) ([]*store.Chat, error) {
+	all, err := s.Store.Chats(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	me := ident.SenderFrom(r.Context()).Device
+	out := []*store.Chat{}
+	for _, c := range all {
+		if c.Visible(me) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // ---- chats ----
 
 func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
-	chats, err := s.Store.Chats(r.Context())
+	chats, err := s.visibleChats(r)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -407,48 +475,94 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
-	name, ok := chatName(w, r)
-	if !ok {
+	var req struct {
+		Name    string   `json:"name"`
+		Members []string `json:"members"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	c, err := s.Store.CreateChat(r.Context(), name)
+	name, ok := cleanChatName(req.Name)
+	if !ok {
+		http.Error(w, "invalid chat name", http.StatusBadRequest)
+		return
+	}
+	if len(req.Members) > 0 {
+		// A private chat always includes whoever creates it.
+		req.Members = append(req.Members, ident.SenderFrom(r.Context()).Device)
+	}
+	c, err := s.Store.CreateChat(r.Context(), name, req.Members...)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	s.publish("chat", c)
+	s.publishTo(c.Members, "chat", c)
 	writeJSON(w, http.StatusCreated, c)
 }
 
-func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
-	id, ok := chatID(w, r)
+func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
-	name, ok := chatName(w, r)
-	if !ok {
+	var req struct {
+		Device string `json:"device"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || strings.TrimSpace(req.Device) == "" {
+		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	c, err := s.Store.RenameChat(r.Context(), id, name)
+	if len(c.Members) == 0 {
+		http.Error(w, "chat is already open to every device", http.StatusBadRequest)
+		return
+	}
+	c, err := s.Store.AddMember(r.Context(), c.ID, req.Device)
 	if err != nil {
 		storeError(w, r, err)
 		return
 	}
-	s.publish("chat", c)
+	s.publishTo(c.Members, "chat", c)
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.visibleChat(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	name, ok := cleanChatName(req.Name)
+	if !ok {
+		http.Error(w, "invalid chat name", http.StatusBadRequest)
+		return
+	}
+	c, err := s.Store.RenameChat(r.Context(), c.ID, name)
+	if err != nil {
+		storeError(w, r, err)
+		return
+	}
+	s.publishTo(c.Members, "chat", c)
 	writeJSON(w, http.StatusOK, c)
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
-	id, ok := chatID(w, r)
+	c, ok := s.visibleChat(w, r)
 	if !ok {
 		return
 	}
-	fresh, err := s.Store.DeleteChat(r.Context(), id)
+	fresh, err := s.Store.DeleteChat(r.Context(), c.ID)
 	if err != nil {
 		storeError(w, r, err)
 		return
 	}
-	s.publish("chat_delete", map[string]int64{"id": id})
+	s.publishTo(c.Members, "chat_delete", map[string]int64{"id": c.ID})
 	if fresh != nil {
 		s.publish("chat", fresh)
 	}
@@ -464,20 +578,9 @@ func chatID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-func chatName(w http.ResponseWriter, r *http.Request) (string, bool) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return "", false
-	}
-	name := strings.Join(strings.Fields(req.Name), " ")
-	if name == "" || len([]rune(name)) > MaxChatName {
-		http.Error(w, "invalid chat name", http.StatusBadRequest)
-		return "", false
-	}
-	return name, true
+func cleanChatName(name string) (string, bool) {
+	name = strings.Join(strings.Fields(name), " ")
+	return name, name != "" && len([]rune(name)) <= MaxChatName
 }
 
 // ---- devices ----

@@ -21,8 +21,7 @@ const els = {
   newChat: $("new-chat"),
   newChatForm: $("new-chat-form"),
   newChatInput: $("new-chat-input"),
-  renameChat: $("rename-chat"),
-  deleteChat: $("delete-chat"),
+  chatMembers: $("chat-members"),
   deviceList: $("device-list"),
   menuBtn: $("menu-btn"),
   scrim: $("scrim"),
@@ -121,6 +120,11 @@ const STRINGS = {
     renameDevice: "rename device",
     resetName: "restore name",
     notifyBlocked: "notifications are blocked in this browser",
+    startChat: "start private chat",
+    addToChat: (name) => `add to “${name}”`,
+    privateChat: "private chat",
+    expired: "expired",
+    fileRetention: "delete files after",
     messagesTab: "messages",
     filesTab: "files",
     mediaTab: "images & videos",
@@ -180,6 +184,11 @@ const STRINGS = {
     renameDevice: "renombrar dispositivo",
     resetName: "restaurar nombre",
     notifyBlocked: "las notificaciones están bloqueadas en este navegador",
+    startChat: "empezar chat privado",
+    addToChat: (name) => `añadir a «${name}»`,
+    privateChat: "chat privado",
+    expired: "caducado",
+    fileRetention: "borrar archivos tras",
     messagesTab: "mensajes",
     filesTab: "archivos",
     mediaTab: "imágenes y vídeos",
@@ -286,6 +295,13 @@ function deviceColor(name) {
   return `var(${FLAME[h % FLAME.length]})`;
 }
 
+const LOCK_SVG = '<svg viewBox="0 0 8 9" width="9" height="10" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M2 0h4v1h1v3h1v5H0V4h1V1h1Zm0 1v3h4V1Z"/></svg>';
+function lockIcon(cls = "lock") {
+  const span = el("span", { class: cls, title: t.privateChat });
+  span.innerHTML = LOCK_SVG; // constant markup, no user data
+  return span;
+}
+
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -351,7 +367,9 @@ function renderMessage(m) {
   let bubble;
   const actions = el("div", { class: "actions" });
 
-  if (m.kind === "text") {
+  if (m.kind === "expired") {
+    bubble = el("div", { class: "bubble expired" }, `📎 ${m.body} — ${t.expired}`);
+  } else if (m.kind === "text") {
     bubble = el("div", { class: "bubble" }, renderText(m.body));
     bubble.addEventListener("click", (e) => {
       if (e.target.closest("a") || window.getSelection().toString()) return;
@@ -548,8 +566,13 @@ function renderChats() {
     const unread = state.unread.get(c.id);
     const item = el(
       "li",
-      { class: `chat-item${c.id === state.chat ? " current" : ""}`, onclick: () => selectChat(c.id) },
+      {
+        class: `chat-item${c.id === state.chat ? " current" : ""}`,
+        title: c.members ? c.members.map(displayName).join(", ") : "",
+        onclick: () => selectChat(c.id),
+      },
       el("span", { class: "name" }, c.name),
+      c.members ? lockIcon() : null,
       unread ? el("span", { class: "unread" }, unread > 99 ? "99+" : String(unread)) : el("span", { class: "when" }, shortWhen(new Date(c.last_at))),
     );
     onMenu(item, () => [
@@ -561,6 +584,11 @@ function renderChats() {
   els.chatList.replaceChildren(...items);
   const current = state.chats.get(state.chat);
   els.chatTitle.textContent = current ? current.name : "";
+  els.chatMembers.hidden = !current?.members;
+  if (current?.members) {
+    els.chatMembers.replaceChildren(lockIcon("lock-h"), current.members.map(displayName).join(", "));
+    els.chatMembers.title = t.privateChat;
+  }
   document.title = current ? `${current.name} · pneuma` : "pneuma";
 }
 
@@ -699,10 +727,15 @@ async function deleteChat(id) {
 }
 
 els.chatTitle.addEventListener("dblclick", () => renameChat(state.chat));
-els.renameChat.addEventListener("click", () => renameChat(state.chat));
-els.deleteChat.replaceWith(
-  (els.deleteChat = confirmButton(t.delete, t.deleteChatConfirm, "tool danger", () => deleteChat(state.chat))),
-);
+els.chatTitle.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const c = state.chats.get(state.chat);
+  if (!c) return;
+  openMenu(e.clientX, e.clientY, [
+    { label: t.renameChat, action: () => renameChat(c.id) },
+    { label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) },
+  ]);
+});
 
 // ---------- Context menu ----------
 
@@ -781,14 +814,51 @@ function renderDevices() {
       const item = el("li", { class: `dev ${cls}` }, el("span", { class: "sq" }), name, el("span", { class: "state" }, label));
       const rename = () =>
         inlineEdit(name, displayName(d.name), (alias) => setAlias(d.name, alias || d.name), "device-rename");
-      item.addEventListener("dblclick", rename);
-      onMenu(item, () => [
-        { label: t.renameDevice, action: rename },
-        ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
-      ]);
+      const items = () => {
+        const current = state.chats.get(state.chat);
+        return [
+          ...(here ? [] : [{ label: t.startChat, action: () => startPrivateChat(d.name) }]),
+          ...(!here && current?.members && !current.members.includes(d.name)
+            ? [{ label: t.addToChat(current.name), action: () => addMember(current.id, d.name) }]
+            : []),
+          { label: t.renameDevice, action: rename },
+          ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
+        ];
+      };
+      onMenu(item, items);
+      // A plain click opens the same menu, anchored to the row.
+      item.addEventListener("click", (e) => {
+        if (e.target.closest("input")) return;
+        e.stopPropagation();
+        const r = item.getBoundingClientRect();
+        openMenu(Math.min(e.clientX, r.right - 180), r.bottom, items());
+      });
       return item;
     }),
   );
+}
+
+// Opens the private chat with exactly {me, device}, creating it if needed.
+async function startPrivateChat(device) {
+  const me = state.me.device;
+  const want = [me, device].sort().join("\n");
+  const existing = [...state.chats.values()].find((c) => c.members && [...c.members].sort().join("\n") === want);
+  if (existing) return selectChat(existing.id);
+  try {
+    const c = await request("POST", "/api/chats", { name: displayName(device), members: [device] });
+    upsertChat(c);
+    selectChat(c.id);
+  } catch (err) {
+    toast(String(err.message), true);
+  }
+}
+
+async function addMember(chat, device) {
+  try {
+    upsertChat(await request("POST", `/api/chats/${chat}/members`, { device }));
+  } catch (err) {
+    toast(String(err.message), true);
+  }
 }
 
 async function setAlias(device, alias) {
@@ -804,6 +874,8 @@ function applyAliases(aliases) {
   state.nodes.clear(); // message heads show the alias
   render();
   renderDevices();
+  renderChats();
+  renderFiles();
 }
 
 // ---------- Settings ----------
@@ -814,6 +886,7 @@ const ui = {
   enter: $("set-enter"),
   notify: $("set-notify"),
   retention: $("set-retention"),
+  fileRetention: $("set-file-retention"),
   max: $("set-max"),
   usage: $("set-usage"),
 };
@@ -827,6 +900,7 @@ async function openSettings() {
   try {
     const { settings, usage, aliases } = await getJSON("/api/settings");
     ui.retention.value = String(settings.retention_days);
+    setSelect(ui.fileRetention, settings.file_retention_days, (d) => `${d} d`);
     setSelect(ui.max, settings.max_upload, formatSize);
     ui.usage.textContent = t.usage(usage.messages, usage.files, formatSize(usage.bytes));
     state.aliases = aliases;
@@ -877,6 +951,7 @@ async function patchSettings(body) {
   }
 }
 ui.retention.addEventListener("change", () => patchSettings({ retention_days: Number(ui.retention.value) }));
+ui.fileRetention.addEventListener("change", () => patchSettings({ file_retention_days: Number(ui.fileRetention.value) }));
 ui.max.addEventListener("change", () => patchSettings({ max_upload: Number(ui.max.value) }));
 
 // ---------- Notifications ----------

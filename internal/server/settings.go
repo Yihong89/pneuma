@@ -12,8 +12,13 @@ import (
 
 // Settings shared by every device, editable from the web app.
 const (
-	keyRetention = "retention_days" // 0 keeps everything
-	keyMaxUpload = "max_upload"     // bytes
+	keyRetention     = "retention_days"      // messages; 0 keeps them forever
+	keyFileRetention = "file_retention_days" // files; 0 keeps them forever
+	keyMaxUpload     = "max_upload"          // bytes
+
+	// Files are what fill the disk; text is tiny. By default files expire
+	// after a month and messages stay.
+	defaultFileRetention = 30
 
 	MaxAlias     = 40
 	maxRetention = 3650
@@ -22,14 +27,18 @@ const (
 )
 
 type settings struct {
-	RetentionDays int64 `json:"retention_days"`
-	MaxUpload     int64 `json:"max_upload"`
+	RetentionDays     int64 `json:"retention_days"`
+	FileRetentionDays int64 `json:"file_retention_days"`
+	MaxUpload         int64 `json:"max_upload"`
 }
 
 func (s *Server) settings(ctx context.Context) (settings, error) {
 	var st settings
 	var err error
 	if st.RetentionDays, err = s.Store.SettingInt(ctx, keyRetention, 0); err != nil {
+		return st, err
+	}
+	if st.FileRetentionDays, err = s.Store.SettingInt(ctx, keyFileRetention, defaultFileRetention); err != nil {
 		return st, err
 	}
 	st.MaxUpload, err = s.Store.SettingInt(ctx, keyMaxUpload, s.MaxUpload)
@@ -66,8 +75,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		RetentionDays *int64 `json:"retention_days"`
-		MaxUpload     *int64 `json:"max_upload"`
+		RetentionDays     *int64 `json:"retention_days"`
+		FileRetentionDays *int64 `json:"file_retention_days"`
+		MaxUpload         *int64 `json:"max_upload"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -80,6 +90,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Store.SetSetting(ctx, keyRetention, strconv.FormatInt(*v, 10)); err != nil {
+			serverError(w, err)
+			return
+		}
+	}
+	if v := req.FileRetentionDays; v != nil {
+		if *v < 0 || *v > maxRetention {
+			http.Error(w, "file_retention_days out of range", http.StatusBadRequest)
+			return
+		}
+		if err := s.Store.SetSetting(ctx, keyFileRetention, strconv.FormatInt(*v, 10)); err != nil {
 			serverError(w, err)
 			return
 		}
@@ -100,7 +120,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish("settings", st)
-	if req.RetentionDays != nil {
+	if req.RetentionDays != nil || req.FileRetentionDays != nil {
 		s.applyRetention(ctx)
 	}
 	writeJSON(w, http.StatusOK, st)
@@ -153,17 +173,31 @@ func (s *Server) RunRetention(ctx context.Context) {
 }
 
 func (s *Server) applyRetention(ctx context.Context) {
-	days, err := s.Store.SettingInt(ctx, keyRetention, 0)
-	if err != nil || days <= 0 {
-		return
-	}
-	n, err := s.Store.DeleteOlderThan(ctx, time.Now().AddDate(0, 0, -int(days)))
+	st, err := s.settings(ctx)
 	if err != nil {
 		log.Printf("retention: %v", err)
 		return
 	}
-	if n > 0 {
-		log.Printf("retention: removed %d messages older than %d days", n, days)
-		s.publish("resync", map[string]int64{"removed": n})
+	var changed int64
+	if d := st.FileRetentionDays; d > 0 {
+		n, err := s.Store.ExpireFilesOlderThan(ctx, time.Now().AddDate(0, 0, -int(d)))
+		if err != nil {
+			log.Printf("retention: %v", err)
+		} else if n > 0 {
+			log.Printf("retention: expired %d files older than %d days", n, d)
+			changed += n
+		}
+	}
+	if d := st.RetentionDays; d > 0 {
+		n, err := s.Store.DeleteOlderThan(ctx, time.Now().AddDate(0, 0, -int(d)))
+		if err != nil {
+			log.Printf("retention: %v", err)
+		} else if n > 0 {
+			log.Printf("retention: removed %d messages older than %d days", n, d)
+			changed += n
+		}
+	}
+	if changed > 0 {
+		s.publish("resync", map[string]int64{"changed": changed})
 	}
 }

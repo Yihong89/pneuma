@@ -224,17 +224,21 @@ button { font: inherit; color: inherit; }
 .status.offline { color: var(--flame-6); }
 .status.offline .dot { background: var(--flame-6); }
 @keyframes blink { 50% { opacity: 0.15; } }
-.chat-tools {
+.chat-members {
   position: absolute;
-  right: 10px;
-  top: 10px;
+  top: 11px;
+  right: 12px;
   display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  z-index: 1;
+  align-items: center;
+  gap: 6px;
+  max-width: 50%;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.chat:hover .chat-tools, .chat-tools:focus-within { opacity: 1; }
+.chat-members svg, .chat-item .lock { flex: none; color: var(--text-2); }
 .tool {
   padding: 1px 8px;
   border: 1px solid var(--line-strong);
@@ -330,6 +334,7 @@ button { font: inherit; color: inherit; }
 .bubble pre:last-child { margin-bottom: 2px; }
 
 .bubble.media { padding: 3px; cursor: default; }
+.bubble.expired { color: var(--dim); border-style: dashed; cursor: default; font-size: 12px; }
 .bubble.media img, .bubble.media video { display: block; max-width: 100%; max-height: 380px; background: var(--raised-2); }
 .bubble.media img { cursor: zoom-in; min-width: 80px; min-height: 60px; }
 .bubble.media audio { display: block; width: min(340px, 70vw); }
@@ -696,9 +701,8 @@ button { font: inherit; color: inherit; }
   .icon-btn.menu-btn { display: grid; position: absolute; left: 4px; top: 4px; z-index: 2; }
   .chat-head { min-height: 40px; }
   .chat-title { left: 44px; max-width: calc(100% - 120px); }
-  .chat-tools { opacity: 1; top: 8px; }
   .tabs { left: 44px; top: 9px; }
-  .chat-tools #rename-chat { display: none; }
+  .chat-members { top: 12px; max-width: 34%; }
   .files { padding: 10px; }
   .media-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
   .doc { grid-template-columns: 36px minmax(0, 1fr) auto; }
@@ -706,7 +710,6 @@ button { font: inherit; color: inherit; }
   .doc .mini { grid-column: 2 / -1; margin-top: -6px; }
   .lightbox { grid-template-columns: 0 minmax(0, 1fr) 0; }
   .lightbox .nav { display: none; }
-  .chat-tools .tool { padding: 1px 6px; }
   .log { padding: 10px 10px 6px; }
   .msg { max-width: 90%; }
   .bubble.filebox { min-width: 0; }

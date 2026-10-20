@@ -16,6 +16,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,6 +35,9 @@ type Kind string
 const (
 	KindText Kind = "text"
 	KindFile Kind = "file"
+	// KindExpired is a file message whose file was removed by retention;
+	// Body keeps the file's name.
+	KindExpired Kind = "expired"
 )
 
 // Sender identifies the device that created a message.
@@ -59,6 +64,23 @@ type Chat struct {
 	// LastAt is the time of the newest message, or CreatedAt if empty.
 	LastAt time.Time `json:"last_at"`
 	Count  int64     `json:"count"`
+	// Members restricts the chat to these devices. Empty means every
+	// device on the tailnet can see it.
+	Members []string `json:"members,omitempty"`
+}
+
+// Visible reports whether device may see the chat.
+func (c *Chat) Visible(device string) bool {
+	return len(c.Members) == 0 || slices.Contains(c.Members, device)
+}
+
+func encodeMembers(m []string) string { return strings.Join(m, "\n") }
+
+func decodeMembers(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
 
 // Message is a single chat entry: either a piece of text or a file.
@@ -82,7 +104,8 @@ const schema = `
 CREATE TABLE IF NOT EXISTS chats (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	name       TEXT NOT NULL,
-	created_at INTEGER NOT NULL
+	created_at INTEGER NOT NULL,
+	members    TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS files (
 	id     TEXT PRIMARY KEY,
@@ -117,6 +140,15 @@ func migrate(db *sql.DB) error {
 	if hasChat == 0 {
 		// SQLite can't add a REFERENCES column with a non-NULL default.
 		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	var hasMembers int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'members'`).Scan(&hasMembers); err != nil {
+		return err
+	}
+	if hasMembers == 0 {
+		if _, err := db.Exec(`ALTER TABLE chats ADD COLUMN members TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
@@ -344,7 +376,7 @@ func (s *Store) removeFiles(ctx context.Context, ids []string) error {
 // ---- chats ----
 
 const selectChats = `
-SELECT c.id, c.name, c.created_at, COALESCE(MAX(m.created_at), c.created_at), COUNT(m.id)
+SELECT c.id, c.name, c.created_at, COALESCE(MAX(m.created_at), c.created_at), COUNT(m.id), c.members
 FROM chats c LEFT JOIN messages m ON m.chat_id = c.id`
 
 // Chats returns all chats, most recently active first.
@@ -358,10 +390,12 @@ func (s *Store) Chats(ctx context.Context) ([]*Chat, error) {
 	for rows.Next() {
 		var c Chat
 		var created, last int64
-		if err := rows.Scan(&c.ID, &c.Name, &created, &last, &c.Count); err != nil {
+		var members string
+		if err := rows.Scan(&c.ID, &c.Name, &created, &last, &c.Count, &members); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, c.LastAt = time.UnixMilli(created).UTC(), time.UnixMilli(last).UTC()
+		c.Members = decodeMembers(members)
 		chats = append(chats, &c)
 	}
 	return chats, rows.Err()
@@ -371,8 +405,10 @@ func (s *Store) Chats(ctx context.Context) ([]*Chat, error) {
 func (s *Store) Chat(ctx context.Context, id int64) (*Chat, error) {
 	var c Chat
 	var created, last int64
+	var members string
 	err := s.db.QueryRowContext(ctx, selectChats+` WHERE c.id = ? GROUP BY c.id`, id).
-		Scan(&c.ID, &c.Name, &created, &last, &c.Count)
+		Scan(&c.ID, &c.Name, &created, &last, &c.Count, &members)
+	c.Members = decodeMembers(members)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -383,9 +419,12 @@ func (s *Store) Chat(ctx context.Context, id int64) (*Chat, error) {
 	return &c, nil
 }
 
-// CreateChat adds a new, empty chat.
-func (s *Store) CreateChat(ctx context.Context, name string) (*Chat, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO chats (name, created_at) VALUES (?, ?)`, name, time.Now().UnixMilli())
+// CreateChat adds a new, empty chat. With members, only those devices can
+// see it.
+func (s *Store) CreateChat(ctx context.Context, name string, members ...string) (*Chat, error) {
+	members = normalizeMembers(members)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO chats (name, created_at, members) VALUES (?, ?, ?)`,
+		name, time.Now().UnixMilli(), encodeMembers(members))
 	if err != nil {
 		return nil, err
 	}
@@ -394,6 +433,40 @@ func (s *Store) CreateChat(ctx context.Context, name string) (*Chat, error) {
 		return nil, err
 	}
 	return s.Chat(ctx, id)
+}
+
+// AddMember gives device access to a private chat.
+func (s *Store) AddMember(ctx context.Context, id int64, device string) (*Chat, error) {
+	c, err := s.Chat(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	members := normalizeMembers(append(c.Members, device))
+	if _, err := s.db.ExecContext(ctx, `UPDATE chats SET members = ? WHERE id = ?`, encodeMembers(members), id); err != nil {
+		return nil, err
+	}
+	return s.Chat(ctx, id)
+}
+
+func normalizeMembers(m []string) []string {
+	var out []string
+	for _, d := range m {
+		if d = strings.TrimSpace(d); d != "" && !strings.Contains(d, "\n") && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// FileChat returns the chat a stored file belongs to.
+func (s *Store) FileChat(ctx context.Context, fileID string) (int64, error) {
+	var chat int64
+	err := s.db.QueryRowContext(ctx, `SELECT chat_id FROM messages WHERE file_id = ?`, fileID).Scan(&chat)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return chat, err
 }
 
 // RenameChat changes a chat's name.
@@ -408,9 +481,9 @@ func (s *Store) RenameChat(ctx context.Context, id int64, name string) (*Chat, e
 	return s.Chat(ctx, id)
 }
 
-// DeleteChat removes a chat with all its messages and files. If it was the
-// last chat, a fresh empty one is created so there is always somewhere to
-// write; it is returned (nil otherwise).
+// DeleteChat removes a chat with all its messages and files. If no chat
+// open to every device is left, a fresh "general" is created so there is
+// always somewhere to write; it is returned (nil otherwise).
 func (s *Store) DeleteChat(ctx context.Context, id int64) (*Chat, error) {
 	if err := s.chatExists(ctx, id); err != nil {
 		return nil, err
@@ -438,8 +511,9 @@ func (s *Store) DeleteChat(ctx context.Context, id int64) (*Chat, error) {
 	if err := s.removeFiles(ctx, files); err != nil {
 		return nil, err
 	}
+	// Keep at least one chat every device can see.
 	var left int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats`).Scan(&left); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE members = ''`).Scan(&left); err != nil {
 		return nil, err
 	}
 	if left == 0 {

@@ -369,3 +369,114 @@ func TestListFiles(t *testing.T) {
 		t.Fatalf("files = %+v", files)
 	}
 }
+
+// as returns a client that poses as device in dev mode.
+func as(t *testing.T, ts *httptest.Server, device, method, path, body string) *http.Response {
+	t.Helper()
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return do(t, method, ts.URL+path+sep+"as="+device, body)
+}
+
+func TestPrivateChats(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	res := as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["mac-mini"]}`)
+	var c store.Chat
+	json.NewDecoder(res.Body).Decode(&c)
+	if res.StatusCode != http.StatusCreated || len(c.Members) != 2 {
+		t.Fatalf("create = %d %+v", res.StatusCode, c)
+	}
+	id := strconv.FormatInt(c.ID, 10)
+	as(t, ts, "mac-mini", "POST", "/api/chats/"+id+"/messages", `{"text":"only us"}`)
+	body, ctype := multipartBody(t, nil, map[string]string{"plan.txt": "secret plan"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/chats/"+id+"/files?as=laptop", body)
+	req.Header.Set("Content-Type", ctype)
+	res, _ = http.DefaultClient.Do(req)
+	var files []store.Message
+	json.NewDecoder(res.Body).Decode(&files)
+	fileURL := "/f/" + files[0].File.ID + "/plan.txt"
+
+	// An outsider sees nothing and can't touch anything.
+	var chats []store.Chat
+	json.NewDecoder(as(t, ts, "phone", "GET", "/api/chats", "").Body).Decode(&chats)
+	for _, ch := range chats {
+		if ch.ID == c.ID {
+			t.Fatalf("outsider can list the private chat")
+		}
+	}
+	for _, probe := range []struct{ method, path, body string }{
+		{"GET", "/api/chats/" + id + "/messages", ""},
+		{"GET", "/api/chats/" + id + "/files", ""},
+		{"POST", "/api/chats/" + id + "/messages", `{"text":"hi"}`},
+		{"PATCH", "/api/chats/" + id, `{"name":"mine now"}`},
+		{"DELETE", "/api/chats/" + id, ""},
+		{"POST", "/api/chats/" + id + "/members", `{"device":"phone"}`},
+		{"GET", fileURL, ""},
+		{"DELETE", "/api/messages/" + strconv.FormatInt(files[0].ID, 10), ""},
+	} {
+		if res := as(t, ts, "phone", probe.method, probe.path, probe.body); res.StatusCode != http.StatusNotFound {
+			t.Errorf("outsider %s %s = %d, want 404", probe.method, probe.path, res.StatusCode)
+		}
+	}
+
+	// Members can add someone, who then gets in.
+	if res := as(t, ts, "laptop", "POST", "/api/chats/"+id+"/members", `{"device":"phone"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("add member = %d", res.StatusCode)
+	}
+	if res := as(t, ts, "phone", "GET", fileURL, ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("new member download = %d", res.StatusCode)
+	}
+}
+
+func TestPrivateEventsStayPrivate(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events?as=phone", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	lines := make(chan string, 100)
+	go func() {
+		r := bufio.NewReader(res.Body)
+		for {
+			l, err := r.ReadString('\n')
+			if err != nil {
+				close(lines)
+				return
+			}
+			lines <- l
+		}
+	}()
+	<-lines // subscribed
+
+	var c store.Chat
+	json.NewDecoder(as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["mac-mini"]}`).Body).Decode(&c)
+	as(t, ts, "laptop", "POST", "/api/chats/"+strconv.FormatInt(c.ID, 10)+"/messages", `{"text":"psst"}`)
+	as(t, ts, "laptop", "POST", "/api/chats/1/messages", `{"text":"public"}`)
+
+	for l := range lines {
+		if strings.Contains(l, "psst") || strings.Contains(l, "secret") {
+			t.Fatalf("outsider received private event: %s", l)
+		}
+		if strings.Contains(l, "public") {
+			return
+		}
+	}
+	t.Fatal("stream ended before the public message")
+}
+
+func TestFileRetentionDefault(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	var got struct {
+		Settings settings `json:"settings"`
+	}
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/settings", "").Body).Decode(&got)
+	if got.Settings.FileRetentionDays != 30 || got.Settings.RetentionDays != 0 {
+		t.Fatalf("defaults = %+v", got.Settings)
+	}
+}
