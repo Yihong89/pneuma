@@ -54,6 +54,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go srv.RunRetention(ctx)
+
 	if *dev {
 		srv.Ident = ident.Dev{}
 		ln, err := net.Listen("tcp", *devAddr)

@@ -214,3 +214,43 @@ func TestMigrateFromV01(t *testing.T) {
 		t.Fatalf("migrated messages = %+v", msgs)
 	}
 }
+
+func TestSettingsAliasesRetention(t *testing.T) {
+	s, dir := open(t)
+	ctx := context.Background()
+
+	if n, _ := s.SettingInt(ctx, "retention_days", 7); n != 7 {
+		t.Fatalf("fallback = %d", n)
+	}
+	s.SetSetting(ctx, "retention_days", "30")
+	s.SetSetting(ctx, "retention_days", "90")
+	if n, _ := s.SettingInt(ctx, "retention_days", 7); n != 90 {
+		t.Fatalf("setting = %d", n)
+	}
+
+	s.SetAlias(ctx, "nothing-phone-3a", "móvil")
+	if a, _ := s.Aliases(ctx); a["nothing-phone-3a"] != "móvil" {
+		t.Fatalf("aliases = %v", a)
+	}
+	s.SetAlias(ctx, "nothing-phone-3a", "")
+	if a, _ := s.Aliases(ctx); len(a) != 0 {
+		t.Fatalf("alias not removed: %v", a)
+	}
+
+	old, _ := s.AddFile(ctx, 1, laptop, "old.txt", "text/plain", strings.NewReader("old"), 10)
+	time.Sleep(5 * time.Millisecond)
+	cut := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	s.AddText(ctx, 1, laptop, "new")
+	n, err := s.DeleteOlderThan(ctx, cut)
+	if err != nil || n != 1 {
+		t.Fatalf("deleted %d, %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files", old.File.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old file still on disk")
+	}
+	u, _ := s.Usage(ctx)
+	if u.Messages != 1 || u.Files != 0 {
+		t.Fatalf("usage = %+v", u)
+	}
+}

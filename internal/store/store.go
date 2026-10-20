@@ -123,6 +123,9 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS messages_chat ON messages(chat_id, id)`); err != nil {
 		return err
 	}
+	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
 	return ensureChat(db)
 }
 

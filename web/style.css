@@ -14,6 +14,12 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Bytesized";
+  src: url("/fonts/bytesized.woff2") format("woff2");
+  font-display: swap;
+}
+
 :root {
   --bg: #000000;
   --panel: #000000;
@@ -34,6 +40,7 @@
   --flame-4: #f4ea5a;
   --flame-5: #fff6cf;
   --flame-6: #d4583c;
+  --ok: #5fe07a;
 
   --gap: 10px;
   --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, Menlo, Consolas, monospace;
@@ -46,7 +53,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.55 var(--mono);
+  font: var(--fs, 13px)/1.55 var(--mono);
   -webkit-tap-highlight-color: transparent;
   -webkit-font-smoothing: antialiased;
 }
@@ -109,6 +116,9 @@ button { font: inherit; color: inherit; }
 }
 .panel-action:hover { color: var(--text); }
 
+.brand .wordmark { flex: 1; font-family: "Bytesized", var(--mono); font-size: 30px; font-weight: 400; letter-spacing: 0.06em; line-height: 1; }
+.gear { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; display: grid; place-items: center; }
+.gear:hover { color: var(--text); }
 .brand {
   display: flex;
   align-items: center;
@@ -162,20 +172,27 @@ button { font: inherit; color: inherit; }
 
 .devices-panel { padding: 14px 0 6px; }
 .device-list { list-style: none; margin: 0; padding: 0; height: 100%; overflow-y: auto; }
-.device {
+.dev {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 3px 12px;
   color: var(--text-2);
 }
-.device .sq { width: 9px; height: 9px; flex: none; border: 1px solid var(--c); }
-.device.active .sq { background: var(--c); }
-.device.offline { color: var(--dim); }
-.device.offline .sq { border-color: var(--dim); }
-.device .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.device .state { font-size: 11px; color: var(--muted); }
-.device.offline .state { color: var(--dim); }
+/* status, not identity: green filled = pneuma open, green outline =
+   on the tailnet, grey = offline */
+.dev .sq { width: 9px; height: 9px; flex: none; border: 1px solid var(--ok); }
+.dev.active .sq { background: var(--ok); }
+.dev.offline { color: var(--dim); }
+.dev.offline .sq { border-color: var(--dim); }
+.dev.here .state { color: var(--ok); }
+.dev { cursor: context-menu; }
+.dev:hover { background: var(--raised-2); }
+.dev .alias-of { color: var(--dim); font-size: 10px; margin-left: 6px; }
+.device-rename { flex: 1; min-width: 0; padding: 1px 4px; border: 1px solid var(--text); background: var(--bg); color: var(--text); font: inherit; outline: none; }
+.dev .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev .state { font-size: 11px; color: var(--muted); }
+.dev.offline .state { color: var(--dim); }
 
 /* ---------- chat panel ---------- */
 
@@ -201,7 +218,12 @@ button { font: inherit; color: inherit; }
   color: var(--muted);
   line-height: 1.2;
 }
+.status .dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--ok); vertical-align: 1px; }
+.status.online { color: var(--ok); }
+.status.online .dot { animation: blink 1.6s steps(2, jump-none) infinite; }
 .status.offline { color: var(--flame-6); }
+.status.offline .dot { background: var(--flame-6); }
+@keyframes blink { 50% { opacity: 0.15; } }
 .chat-tools {
   position: absolute;
   right: 10px;
@@ -460,6 +482,64 @@ button { font: inherit; color: inherit; }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 6px); } }
 
 .scrim { display: none; }
+
+/* context menu */
+.ctx {
+  position: fixed;
+  z-index: 40;
+  min-width: 170px;
+  padding: 4px 0;
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  box-shadow: 4px 4px 0 rgb(255 255 255 / 0.06);
+}
+.ctx button {
+  display: block;
+  width: 100%;
+  padding: 5px 14px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ctx button:hover, .ctx button:focus-visible { background: var(--text); color: var(--bg); outline: none; }
+.ctx button.danger { color: var(--flame-6); }
+.ctx button.danger:hover { background: var(--flame-6); color: var(--bg); }
+.ctx hr { margin: 4px 0; border: 0; border-top: 1px solid var(--line); }
+
+/* settings */
+.settings { padding: 10px 0 0; overflow: visible; border: 0; background: transparent; color: var(--text); max-width: min(480px, calc(100vw - 24px)); width: 100%; }
+.settings::backdrop { background: rgb(0 0 0 / 0.75); }
+.settings-panel { padding: 22px 18px 10px; background: var(--bg); }
+.settings section { padding: 4px 0 12px; }
+.settings section + section { border-top: 1px dashed var(--line); padding-top: 12px; }
+.settings h3 { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 400; text-transform: lowercase; }
+.settings h3::before { content: "# "; color: var(--dim); }
+.settings .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; padding: 5px 0; }
+.settings select {
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.settings select:focus { border-color: var(--text); outline: none; }
+.settings input[type="checkbox"] {
+  appearance: none;
+  width: 30px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  position: relative;
+  cursor: pointer;
+}
+.settings input[type="checkbox"]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px; background: var(--muted); }
+.settings input[type="checkbox"]:checked { border-color: var(--ok); }
+.settings input[type="checkbox"]:checked::after { left: 18px; background: var(--ok); }
+.settings .muted { color: var(--muted); }
+.settings .note { margin: 0; color: var(--text-2); font-size: 12px; white-space: pre-line; }
 
 /* ---------- small screens: sidebar becomes a drawer ---------- */
 

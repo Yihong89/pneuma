@@ -330,3 +330,30 @@ func TestDevicesShowsActive(t *testing.T) {
 		t.Fatalf("devices = %+v", devs)
 	}
 }
+
+func TestSettingsAndAliases(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	if res := do(t, "PATCH", ts.URL+"/api/settings", `{"max_upload": 10}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("tiny max_upload accepted: %d", res.StatusCode)
+	}
+	if res := do(t, "PATCH", ts.URL+"/api/settings", `{"max_upload": 2097152, "retention_days": 30}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d", res.StatusCode)
+	}
+	// the new limit applies to uploads
+	body, ctype := multipartBody(t, nil, map[string]string{"big.bin": strings.Repeat("x", 3<<20)})
+	if res, _ := http.Post(ts.URL+"/api/chats/1/files", ctype, body); res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("upload over new limit = %d", res.StatusCode)
+	}
+
+	if res := do(t, "PUT", ts.URL+"/api/devices/nothing-phone-3a/alias", `{"alias":"  mi   móvil "}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("alias = %d", res.StatusCode)
+	}
+	var got struct {
+		Settings settings          `json:"settings"`
+		Aliases  map[string]string `json:"aliases"`
+	}
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/settings", "").Body).Decode(&got)
+	if got.Settings.RetentionDays != 30 || got.Settings.MaxUpload != 2097152 || got.Aliases["nothing-phone-3a"] != "mi móvil" {
+		t.Fatalf("settings = %+v", got)
+	}
+}

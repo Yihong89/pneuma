@@ -26,7 +26,36 @@ const els = {
   deviceList: $("device-list"),
   menuBtn: $("menu-btn"),
   scrim: $("scrim"),
+  ctx: $("ctx"),
+  settings: $("settings"),
+  settingsBtn: $("settings-btn"),
 };
+
+// ---------- Local preferences (this device only) ----------
+
+const storage = {
+  get(k) {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set(k, v) {
+    try {
+      localStorage.setItem(k, v);
+    } catch {}
+  },
+};
+
+const coarse = matchMedia("(pointer: coarse)").matches;
+const PREF_DEFAULTS = { lang: "auto", size: 13, enterSends: !coarse, notify: false };
+const prefs = { ...PREF_DEFAULTS };
+try {
+  Object.assign(prefs, JSON.parse(storage.get("pneuma.prefs") || "{}"));
+} catch {}
+const savePrefs = () => storage.set("pneuma.prefs", JSON.stringify(prefs));
+document.documentElement.style.setProperty("--fs", `${prefs.size}px`);
 
 // ---------- i18n ----------
 
@@ -61,6 +90,26 @@ const STRINGS = {
     away: "offline",
     attach: "attach files",
     send: "send",
+    settings: "settings",
+    thisDevice: "this device",
+    language: "language",
+    textSize: "text size",
+    enterSends: "enter sends",
+    notifications: "notifications",
+    allDevices: "all devices",
+    retention: "delete messages after",
+    forever: "never",
+    maxUpload: "max upload",
+    storage: "storage",
+    usage: (m, f, b) => `${m} messages · ${f} files · ${b}`,
+    security: "security",
+    securityNote:
+      "In transit: WireGuard (Tailscale) + HTTPS, end to end.\nAt rest: messages and files are stored unencrypted on the server running pneuma.",
+    renameChat: "rename chat",
+    deleteChat: "delete chat",
+    renameDevice: "rename device",
+    resetName: "restore name",
+    notifyBlocked: "notifications are blocked in this browser",
   },
   es: {
     placeholder: "escribe, pega o suelta archivos",
@@ -92,9 +141,29 @@ const STRINGS = {
     away: "desconectado",
     attach: "adjuntar archivos",
     send: "enviar",
+    settings: "ajustes",
+    thisDevice: "este dispositivo",
+    language: "idioma",
+    textSize: "tamaño de texto",
+    enterSends: "enter envía",
+    notifications: "notificaciones",
+    allDevices: "todos los dispositivos",
+    retention: "borrar mensajes tras",
+    forever: "nunca",
+    maxUpload: "subida máxima",
+    storage: "almacenamiento",
+    usage: (m, f, b) => `${m} mensajes · ${f} archivos · ${b}`,
+    security: "seguridad",
+    securityNote:
+      "En tránsito: WireGuard (Tailscale) + HTTPS, de extremo a extremo.\nEn reposo: los mensajes y archivos se guardan sin cifrar en el servidor donde corre pneuma.",
+    renameChat: "renombrar chat",
+    deleteChat: "borrar chat",
+    renameDevice: "renombrar dispositivo",
+    resetName: "restaurar nombre",
+    notifyBlocked: "las notificaciones están bloqueadas en este navegador",
   },
 };
-const lang = navigator.language?.toLowerCase().startsWith("es") ? "es" : "en";
+const lang = prefs.lang !== "auto" ? prefs.lang : navigator.language?.toLowerCase().startsWith("es") ? "es" : "en";
 const t = STRINGS[lang];
 document.documentElement.lang = lang;
 for (const node of document.querySelectorAll("[data-t]")) node.textContent = t[node.dataset.t];
@@ -142,22 +211,10 @@ const state = {
   stick: true, // keep the view pinned to the bottom
   devices: [],
   active: new Set(),
+  aliases: {}, // tailnet name -> display name
 };
 
-const storage = {
-  get(k) {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  set(k, v) {
-    try {
-      localStorage.setItem(k, v);
-    } catch {}
-  },
-};
+const displayName = (device) => state.aliases[device] || device;
 
 // ---------- Formatting ----------
 
@@ -258,7 +315,7 @@ function renderMessage(m) {
     "div",
     { class: "head" },
     el("span", { class: "sq" }),
-    el("span", { class: "device" }, m.device),
+    el("span", { class: "device", title: m.device }, displayName(m.device)),
     el("span", {}, timeFmt.format(when)),
   );
 
@@ -456,12 +513,17 @@ function sortedChats() {
 function renderChats() {
   const items = sortedChats().map((c) => {
     const unread = state.unread.get(c.id);
-    return el(
+    const item = el(
       "li",
       { class: `chat-item${c.id === state.chat ? " current" : ""}`, onclick: () => selectChat(c.id) },
       el("span", { class: "name" }, c.name),
       unread ? el("span", { class: "unread" }, unread > 99 ? "99+" : String(unread)) : el("span", { class: "when" }, shortWhen(new Date(c.last_at))),
     );
+    onMenu(item, () => [
+      { label: t.renameChat, action: () => renameChat(c.id, item.querySelector(".name")) },
+      { label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) },
+    ]);
+    return item;
   });
   els.chatList.replaceChildren(...items);
   const current = state.chats.get(state.chat);
@@ -551,45 +613,111 @@ els.newChatForm.addEventListener("submit", async (e) => {
   }
 });
 
-function startRename() {
-  const c = state.chats.get(state.chat);
-  if (!c) return;
-  const input = el("input", { class: "chat-title-input", maxlength: "80", value: c.name, spellcheck: "false" });
+// Replaces target's text with an input; calls save(newValue) on Enter or
+// blur, restores on Escape.
+function inlineEdit(target, value, save, cls = "chat-title-input") {
+  const input = el("input", { class: cls, maxlength: "80", spellcheck: "false" });
+  input.value = value;
   let done = false;
-  const finish = async (save) => {
+  const finish = async (commit) => {
     if (done) return;
     done = true;
     input.remove();
-    const name = input.value.trim();
-    if (save && name && name !== c.name) {
-      try {
-        upsertChat(await request("PATCH", `/api/chats/${c.id}`, { name }));
-      } catch (err) {
-        toast(String(err.message), true);
-      }
-    }
+    target.hidden = false;
+    const v = input.value.trim();
+    if (commit && v !== value) await save(v);
   };
   input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
     if (e.key === "Enter") finish(true);
     if (e.key === "Escape") finish(false);
   });
+  input.addEventListener("click", (e) => e.stopPropagation());
   input.addEventListener("blur", () => finish(true));
-  els.chatTitle.after(input);
+  target.hidden = true;
+  target.after(input);
+  input.focus();
   input.select();
 }
-els.chatTitle.addEventListener("dblclick", startRename);
-els.renameChat.addEventListener("click", startRename);
-els.deleteChat.replaceWith(
-  (els.deleteChat = confirmButton(t.delete, t.deleteChatConfirm, "tool danger", async () => {
-    const id = state.chat;
+
+function renameChat(id, target = els.chatTitle) {
+  const c = state.chats.get(id);
+  if (!c) return;
+  inlineEdit(target, c.name, async (name) => {
+    if (!name) return;
     try {
-      await request("DELETE", `/api/chats/${id}`);
-      chatDeleted(id);
+      upsertChat(await request("PATCH", `/api/chats/${id}`, { name }));
     } catch (err) {
       toast(String(err.message), true);
     }
-  })),
+  });
+}
+
+async function deleteChat(id) {
+  try {
+    await request("DELETE", `/api/chats/${id}`);
+    chatDeleted(id);
+  } catch (err) {
+    toast(String(err.message), true);
+  }
+}
+
+els.chatTitle.addEventListener("dblclick", () => renameChat(state.chat));
+els.renameChat.addEventListener("click", () => renameChat(state.chat));
+els.deleteChat.replaceWith(
+  (els.deleteChat = confirmButton(t.delete, t.deleteChatConfirm, "tool danger", () => deleteChat(state.chat))),
 );
+
+// ---------- Context menu ----------
+
+// Right click (or long press on touch) opens a small menu built by items().
+function onMenu(node, items) {
+  node.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openMenu(e.clientX, e.clientY, items());
+  });
+  let timer;
+  node.addEventListener("touchstart", (e) => {
+    const touch = e.touches[0];
+    timer = setTimeout(() => openMenu(touch.clientX, touch.clientY, items()), 500);
+  }, { passive: true });
+  for (const ev of ["touchend", "touchmove", "touchcancel"]) node.addEventListener(ev, () => clearTimeout(timer));
+}
+
+function openMenu(x, y, items) {
+  const buttons = items.map((it) => {
+    const btn = el("button", { type: "button", role: "menuitem", class: it.danger ? "danger" : "" }, it.label);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (it.confirm && !btn.dataset.armed) {
+        btn.dataset.armed = "1";
+        btn.textContent = it.confirm;
+        return;
+      }
+      closeMenu();
+      it.action();
+    });
+    return btn;
+  });
+  els.ctx.replaceChildren(...buttons);
+  els.ctx.hidden = false;
+  const r = els.ctx.getBoundingClientRect();
+  els.ctx.style.left = `${Math.min(x, innerWidth - r.width - 4)}px`;
+  els.ctx.style.top = `${Math.min(y, innerHeight - r.height - 4)}px`;
+  buttons[0]?.focus();
+}
+
+function closeMenu() {
+  els.ctx.hidden = true;
+}
+document.addEventListener("click", (e) => {
+  if (!els.ctx.contains(e.target)) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+});
+window.addEventListener("blur", closeMenu);
+window.addEventListener("resize", closeMenu);
 
 // ---------- Devices ----------
 
@@ -609,18 +737,129 @@ function renderDevices() {
   const list = [...state.devices].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   els.deviceList.replaceChildren(
     ...list.map((d) => {
-      const active = state.active.has(d.name);
-      const label = d.name === me ? t.here : active ? t.open : d.online ? t.idle : t.away;
-      const cls = active ? "active" : d.online ? "" : "offline";
-      return el(
-        "li",
-        { class: `device ${cls}`, style: `--c:${deviceColor(d.name)}`, title: d.os || "" },
-        el("span", { class: "sq" }),
-        el("span", { class: "name" }, d.name),
-        el("span", { class: "state" }, label),
-      );
+      const here = d.name === me;
+      const active = here || state.active.has(d.name);
+      const label = here ? t.here : active ? t.open : d.online ? t.idle : t.away;
+      const cls = `${active ? "active" : d.online ? "" : "offline"}${here ? " here" : ""}`;
+      const name = el("span", { class: "name", title: [d.name, d.os].filter(Boolean).join(" · ") }, displayName(d.name));
+      const item = el("li", { class: `dev ${cls}` }, el("span", { class: "sq" }), name, el("span", { class: "state" }, label));
+      const rename = () =>
+        inlineEdit(name, displayName(d.name), (alias) => setAlias(d.name, alias || d.name), "device-rename");
+      item.addEventListener("dblclick", rename);
+      onMenu(item, () => [
+        { label: t.renameDevice, action: rename },
+        ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
+      ]);
+      return item;
     }),
   );
+}
+
+async function setAlias(device, alias) {
+  try {
+    applyAliases(await request("PUT", `/api/devices/${encodeURIComponent(device)}/alias`, { alias }));
+  } catch (err) {
+    toast(String(err.message), true);
+  }
+}
+
+function applyAliases(aliases) {
+  state.aliases = aliases || {};
+  state.nodes.clear(); // message heads show the alias
+  render();
+  renderDevices();
+}
+
+// ---------- Settings ----------
+
+const ui = {
+  lang: $("set-lang"),
+  size: $("set-size"),
+  enter: $("set-enter"),
+  notify: $("set-notify"),
+  retention: $("set-retention"),
+  max: $("set-max"),
+  usage: $("set-usage"),
+};
+
+async function openSettings() {
+  ui.lang.value = prefs.lang;
+  ui.size.value = String(prefs.size);
+  ui.enter.checked = prefs.enterSends;
+  ui.notify.checked = prefs.notify && "Notification" in window && Notification.permission === "granted";
+  els.settings.showModal();
+  try {
+    const { settings, usage, aliases } = await getJSON("/api/settings");
+    ui.retention.value = String(settings.retention_days);
+    setSelect(ui.max, settings.max_upload, formatSize);
+    ui.usage.textContent = t.usage(usage.messages, usage.files, formatSize(usage.bytes));
+    state.aliases = aliases;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// Selects value, adding an option for it if it isn't one of the presets.
+function setSelect(select, value, label) {
+  const v = String(value);
+  if (![...select.options].some((o) => o.value === v)) select.append(el("option", { value: v }, label(value)));
+  select.value = v;
+}
+
+els.settingsBtn.addEventListener("click", openSettings);
+ui.lang.addEventListener("change", () => {
+  prefs.lang = ui.lang.value;
+  savePrefs();
+  location.reload();
+});
+ui.size.addEventListener("change", () => {
+  prefs.size = Number(ui.size.value);
+  savePrefs();
+  document.documentElement.style.setProperty("--fs", `${prefs.size}px`);
+});
+ui.enter.addEventListener("change", () => {
+  prefs.enterSends = ui.enter.checked;
+  savePrefs();
+});
+ui.notify.addEventListener("change", async () => {
+  if (ui.notify.checked && "Notification" in window && Notification.permission !== "granted") {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      ui.notify.checked = false;
+      toast(t.notifyBlocked, true);
+    }
+  }
+  prefs.notify = ui.notify.checked;
+  savePrefs();
+});
+async function patchSettings(body) {
+  try {
+    const st = await request("PATCH", "/api/settings", body);
+    state.maxUpload = st.max_upload;
+  } catch (err) {
+    toast(String(err.message), true);
+  }
+}
+ui.retention.addEventListener("change", () => patchSettings({ retention_days: Number(ui.retention.value) }));
+ui.max.addEventListener("change", () => patchSettings({ max_upload: Number(ui.max.value) }));
+
+// ---------- Notifications ----------
+
+function notify(m) {
+  if (!prefs.notify || !("Notification" in window) || Notification.permission !== "granted") return;
+  if (m.device === state.me?.device) return;
+  if (!document.hidden && m.chat_id === state.chat) return;
+  const chat = state.chats.get(m.chat_id);
+  const n = new Notification(`${displayName(m.device)} · ${chat?.name ?? "pneuma"}`, {
+    body: m.kind === "text" ? m.body.slice(0, 200) : `📎 ${m.file.name}`,
+    icon: "/icons/icon-192.png",
+    tag: `pneuma-${m.chat_id}`,
+  });
+  n.addEventListener("click", () => {
+    window.focus();
+    selectChat(m.chat_id);
+    n.close();
+  });
 }
 
 // ---------- Live updates ----------
@@ -631,6 +870,9 @@ function connect() {
     setOnline(true);
     try {
       await loadChats();
+      const { aliases } = await getJSON("/api/settings");
+      state.aliases = aliases;
+      state.nodes.clear();
       await syncLatest();
       loadDevices();
     } catch (err) {
@@ -641,6 +883,7 @@ function connect() {
   es.addEventListener("message", (e) => {
     const m = JSON.parse(e.data);
     touchChat(m);
+    notify(m);
     const pinned = nearBottom() || (state.me && m.device === state.me.device);
     if (addMessages([m])) {
       render();
@@ -649,6 +892,9 @@ function connect() {
   });
   es.addEventListener("delete", (e) => removeMessage(JSON.parse(e.data).id));
   es.addEventListener("chat", (e) => upsertChat(JSON.parse(e.data)));
+  es.addEventListener("aliases", (e) => applyAliases(JSON.parse(e.data)));
+  es.addEventListener("settings", (e) => (state.maxUpload = JSON.parse(e.data).max_upload));
+  es.addEventListener("resync", () => loadChats().then(syncLatest).catch(console.error));
   es.addEventListener("chat_delete", (e) => chatDeleted(JSON.parse(e.data).id));
   es.addEventListener("presence", (e) => {
     const active = JSON.parse(e.data).active;
@@ -661,7 +907,7 @@ function connect() {
 
 function setOnline(on) {
   els.status.className = `status ${on ? "online" : "offline"}`;
-  els.status.textContent = on ? `● ${t.online}` : `○ ${t.offline}`;
+  els.status.replaceChildren(el("span", { class: "dot" }), on ? t.online : t.offline);
 }
 
 // ---------- Sending ----------
@@ -809,8 +1055,6 @@ function openLightbox(src) {
 
 // ---------- Composer ----------
 
-const coarse = matchMedia("(pointer: coarse)").matches;
-
 function autosize() {
   els.input.style.height = "auto";
   els.input.style.height = `${els.input.scrollHeight}px`;
@@ -818,8 +1062,8 @@ function autosize() {
 
 els.input.addEventListener("input", autosize);
 els.input.addEventListener("keydown", (e) => {
-  // On touch keyboards Enter is a newline; the send button sends.
-  if (e.key === "Enter" && !e.shiftKey && !coarse && !e.isComposing) {
+  // By default Enter sends on desktops and is a newline on touch keyboards.
+  if (e.key === "Enter" && !e.shiftKey && prefs.enterSends && !e.isComposing) {
     e.preventDefault();
     els.composer.requestSubmit();
   }

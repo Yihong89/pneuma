@@ -17,7 +17,10 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <img src="/icons/logo.svg" alt="" width="30" height="30">
-        <span>pneuma</span>
+        <span class="wordmark">pneuma</span>
+        <button type="button" class="gear" id="settings-btn" data-t-title="settings">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" shape-rendering="crispEdges"><path fill="currentColor" d="M7 1h2v2h2v1h1v1h1v2h2v2h-2v2h-1v1h-1v1H9v2H7v-2H5v-1H4v-1H3V9H1V7h2V5h1V4h1V3h2V1Zm0 5v1H6v2h1v1h2V9h1V7H9V6H7Z"/></svg>
+        </button>
       </div>
 
       <section class="panel chats-panel">
@@ -74,6 +77,48 @@
       <ul class="device-list" id="device-list"></ul>
     </aside>
   </div>
+
+  <div class="ctx" id="ctx" role="menu" hidden></div>
+
+  <dialog class="settings" id="settings">
+    <form method="dialog" class="panel settings-panel">
+      <h2 class="panel-title"><span data-t="settings"></span></h2>
+      <button class="panel-action" value="close" aria-label="close">×</button>
+
+      <section>
+        <h3 data-t="thisDevice"></h3>
+        <label class="row"><span data-t="language"></span>
+          <select id="set-lang"><option value="auto">auto</option><option value="es">español</option><option value="en">english</option></select>
+        </label>
+        <label class="row"><span data-t="textSize"></span>
+          <select id="set-size"><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option></select>
+        </label>
+        <label class="row"><span data-t="enterSends"></span><input type="checkbox" id="set-enter"></label>
+        <label class="row"><span data-t="notifications"></span><input type="checkbox" id="set-notify"></label>
+      </section>
+
+      <section>
+        <h3 data-t="allDevices"></h3>
+        <label class="row"><span data-t="retention"></span>
+          <select id="set-retention">
+            <option value="0" data-t="forever"></option>
+            <option value="1">1 d</option><option value="7">7 d</option><option value="30">30 d</option><option value="90">90 d</option><option value="365">365 d</option>
+          </select>
+        </label>
+        <label class="row"><span data-t="maxUpload"></span>
+          <select id="set-max">
+            <option value="104857600">100 MB</option><option value="1073741824">1 GB</option><option value="4294967296">4 GB</option><option value="10737418240">10 GB</option><option value="53687091200">50 GB</option>
+          </select>
+        </label>
+        <p class="row"><span data-t="storage"></span><span id="set-usage" class="muted"></span></p>
+      </section>
+
+      <section>
+        <h3 data-t="security"></h3>
+        <p class="note" data-t="securityNote"></p>
+      </section>
+    </form>
+  </dialog>
 
   <div class="drop" id="drop" hidden><div class="drop-inner" data-t="drop"></div></div>
   <div class="toast" id="toast" role="status" hidden></div>

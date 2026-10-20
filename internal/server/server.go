@@ -30,7 +30,7 @@ type Server struct {
 	Hub       *hub.Hub
 	Ident     ident.Identifier
 	Web       fs.FS // static web app
-	MaxUpload int64 // per request, in bytes
+	MaxUpload int64 // default per-request limit in bytes; overridable in settings
 	// Devices lists the tailnet's devices; nil in dev mode, where only
 	// devices with pneuma open are shown.
 	Devices ident.DeviceLister
@@ -44,6 +44,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
+	mux.HandleFunc("PUT /api/devices/{name}/alias", s.handleAlias)
+	mux.HandleFunc("GET /api/settings", s.handleSettings)
+	mux.HandleFunc("PATCH /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/chats", s.handleChats)
 	mux.HandleFunc("POST /api/chats", s.handleCreateChat)
 	mux.HandleFunc("PATCH /api/chats/{chat}", s.handleRenameChat)
@@ -90,7 +93,7 @@ func (s *Server) static() http.Handler {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sender":     ident.SenderFrom(r.Context()),
-		"max_upload": s.MaxUpload,
+		"max_upload": s.maxUpload(r.Context()),
 	})
 }
 
@@ -225,7 +228,8 @@ func containedIn(xs []string, v string) bool {
 // receiveMultipart stores every file part as a message and returns the
 // (small) non-file form fields.
 func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request, chat int64) ([]*store.Message, map[string]string, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, s.MaxUpload+1<<20)
+	limit := s.maxUpload(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, limit+1<<20)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		return nil, nil, badRequest{err}
@@ -264,7 +268,7 @@ func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request, chat i
 				ctype = t
 			}
 		}
-		m, err := s.Store.AddFile(r.Context(), chat, sender, name, ctype, part, s.MaxUpload)
+		m, err := s.Store.AddFile(r.Context(), chat, sender, name, ctype, part, limit)
 		part.Close()
 		if err != nil {
 			return msgs, fields, err
