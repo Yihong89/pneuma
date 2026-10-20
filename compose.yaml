@@ -1,0 +1,20 @@
+services:
+  pneuma:
+    build: .
+    image: pneuma:local
+    container_name: pneuma
+    restart: unless-stopped
+    environment:
+      # Optional: a Tailscale auth key. Without it, open the login URL
+      # printed by `docker logs pneuma` the first time.
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      PNEUMA_HOSTNAME: ${PNEUMA_HOSTNAME:-pneuma}
+      PNEUMA_MAX_UPLOAD: ${PNEUMA_MAX_UPLOAD:-4GB}
+      PNEUMA_ALLOWED_USERS: ${PNEUMA_ALLOWED_USERS:-}
+    volumes:
+      - pneuma-data:/data
+    # No ports: pneuma joins your tailnet as its own node and is only
+    # reachable from there.
+
+volumes:
+  pneuma-data:

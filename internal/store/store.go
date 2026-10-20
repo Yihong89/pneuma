@@ -1,0 +1,298 @@
+// Package store persists messages and uploaded files.
+//
+// Message metadata lives in SQLite; file contents live on disk under
+// <dir>/files/<id>, written in a streaming fashion so uploads never have to
+// fit in memory.
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// ErrNotFound is returned when a message or file does not exist.
+var ErrNotFound = errors.New("not found")
+
+// ErrTooLarge is returned when an upload exceeds the configured limit.
+var ErrTooLarge = errors.New("file too large")
+
+// Kind is the type of a message.
+type Kind string
+
+const (
+	KindText Kind = "text"
+	KindFile Kind = "file"
+)
+
+// Sender identifies the device that created a message.
+type Sender struct {
+	Device string `json:"device"`
+	OS     string `json:"os"`
+	User   string `json:"user"`
+}
+
+// File is the metadata of an uploaded file.
+type File struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	Mime   string `json:"mime"`
+	SHA256 string `json:"sha256"`
+}
+
+// Message is a single chat entry: either a piece of text or a file.
+type Message struct {
+	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Sender
+	Kind Kind   `json:"kind"`
+	Body string `json:"body,omitempty"`
+	File *File  `json:"file,omitempty"`
+}
+
+// Store is safe for concurrent use.
+type Store struct {
+	db       *sql.DB
+	filesDir string
+}
+
+const schema = `
+CREATE TABLE IF NOT EXISTS files (
+	id     TEXT PRIMARY KEY,
+	name   TEXT NOT NULL,
+	size   INTEGER NOT NULL,
+	mime   TEXT NOT NULL,
+	sha256 TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	created_at INTEGER NOT NULL,
+	device     TEXT NOT NULL,
+	device_os  TEXT NOT NULL,
+	user       TEXT NOT NULL,
+	kind       TEXT NOT NULL,
+	body       TEXT NOT NULL DEFAULT '',
+	file_id    TEXT REFERENCES files(id)
+);
+`
+
+// Open opens (creating if needed) the store rooted at dir.
+func Open(dir string) (*Store, error) {
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		return nil, err
+	}
+	dsn := "file:" + filepath.Join(dir, "pneuma.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// SQLite allows a single writer; serialising through one connection
+	// avoids SQLITE_BUSY under concurrent uploads.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return &Store{db: db, filesDir: filesDir}, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// AddText stores a text message.
+func (s *Store) AddText(ctx context.Context, from Sender, body string) (*Message, error) {
+	return s.insert(ctx, from, KindText, body, nil)
+}
+
+// AddFile streams r to disk and stores a file message. If more than max bytes
+// are read the partial file is removed and ErrTooLarge is returned.
+func (s *Store) AddFile(ctx context.Context, from Sender, name, mime string, r io.Reader, max int64) (*Message, error) {
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(s.filesDir, id)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, max+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && n > max {
+		err = ErrTooLarge
+	}
+	if err != nil {
+		os.Remove(path)
+		return nil, err
+	}
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	file := &File{ID: id, Name: name, Size: n, Mime: mime, SHA256: hex.EncodeToString(h.Sum(nil))}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO files (id, name, size, mime, sha256) VALUES (?, ?, ?, ?, ?)`,
+		file.ID, file.Name, file.Size, file.Mime, file.SHA256); err != nil {
+		os.Remove(path)
+		return nil, err
+	}
+	m, err := s.insert(ctx, from, KindFile, "", file)
+	if err != nil {
+		s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id)
+		os.Remove(path)
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *Store) insert(ctx context.Context, from Sender, kind Kind, body string, file *File) (*Message, error) {
+	m := &Message{CreatedAt: time.Now().UTC().Truncate(time.Millisecond), Sender: from, Kind: kind, Body: body, File: file}
+	var fileID any
+	if file != nil {
+		fileID = file.ID
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO messages (created_at, device, device_os, user, kind, body, file_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.CreatedAt.UnixMilli(), from.Device, from.OS, from.User, string(kind), body, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if m.ID, err = res.LastInsertId(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+const selectMessages = `
+SELECT m.id, m.created_at, m.device, m.device_os, m.user, m.kind, m.body,
+       f.id, f.name, f.size, f.mime, f.sha256
+FROM messages m LEFT JOIN files f ON f.id = m.file_id`
+
+// List returns up to limit messages with id < before (or the newest when
+// before <= 0), in ascending id order.
+func (s *Store) List(ctx context.Context, before int64, limit int) ([]*Message, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	q := selectMessages + ` WHERE (? <= 0 OR m.id < ?) ORDER BY m.id DESC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, q, before, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, nil
+}
+
+func scanMessages(rows *sql.Rows) ([]*Message, error) {
+	defer rows.Close()
+	var msgs []*Message
+	for rows.Next() {
+		var (
+			m       Message
+			created int64
+			kind    string
+			fid     sql.NullString
+			fname   sql.NullString
+			fsize   sql.NullInt64
+			fmime   sql.NullString
+			fsum    sql.NullString
+		)
+		if err := rows.Scan(&m.ID, &created, &m.Device, &m.OS, &m.User, &kind, &m.Body,
+			&fid, &fname, &fsize, &fmime, &fsum); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = time.UnixMilli(created).UTC()
+		m.Kind = Kind(kind)
+		if fid.Valid {
+			m.File = &File{ID: fid.String, Name: fname.String, Size: fsize.Int64, Mime: fmime.String, SHA256: fsum.String}
+		}
+		msgs = append(msgs, &m)
+	}
+	return msgs, rows.Err()
+}
+
+// Get returns a single message.
+func (s *Store) Get(ctx context.Context, id int64) (*Message, error) {
+	rows, err := s.db.QueryContext(ctx, selectMessages+` WHERE m.id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) == 0 {
+		return nil, ErrNotFound
+	}
+	return msgs[0], nil
+}
+
+// Delete removes a message and, if it carried a file, the file itself.
+func (s *Store) Delete(ctx context.Context, id int64) error {
+	m, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if m.File != nil {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, m.File.ID); err != nil {
+			return err
+		}
+		if err := os.Remove(filepath.Join(s.filesDir, m.File.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// OpenFile returns the metadata and an open handle for a stored file.
+func (s *Store) OpenFile(ctx context.Context, id string) (*File, *os.File, error) {
+	var f File
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, size, mime, sha256 FROM files WHERE id = ?`, id).
+		Scan(&f.ID, &f.Name, &f.Size, &f.Mime, &f.SHA256)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	fh, err := os.Open(filepath.Join(s.filesDir, f.ID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	return &f, fh, nil
+}
+
+func newID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
