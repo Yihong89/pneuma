@@ -228,11 +228,11 @@ func TestSettingsAliasesRetention(t *testing.T) {
 		t.Fatalf("setting = %d", n)
 	}
 
-	s.SetAlias(ctx, "nothing-phone-3a", "móvil")
-	if a, _ := s.Aliases(ctx); a["nothing-phone-3a"] != "móvil" {
+	s.SetAlias(ctx, "pixel-phone", "móvil")
+	if a, _ := s.Aliases(ctx); a["pixel-phone"] != "móvil" {
 		t.Fatalf("aliases = %v", a)
 	}
-	s.SetAlias(ctx, "nothing-phone-3a", "")
+	s.SetAlias(ctx, "pixel-phone", "")
 	if a, _ := s.Aliases(ctx); len(a) != 0 {
 		t.Fatalf("alias not removed: %v", a)
 	}

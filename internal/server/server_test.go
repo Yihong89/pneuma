@@ -361,7 +361,7 @@ func TestSettingsAndAliases(t *testing.T) {
 		t.Fatalf("upload over new limit = %d", res.StatusCode)
 	}
 
-	if res := do(t, "PUT", ts.URL+"/api/devices/nothing-phone-3a/alias", `{"alias":"  mi   móvil "}`); res.StatusCode != http.StatusOK {
+	if res := do(t, "PUT", ts.URL+"/api/devices/pixel-phone/alias", `{"alias":"  mi   móvil "}`); res.StatusCode != http.StatusOK {
 		t.Fatalf("alias = %d", res.StatusCode)
 	}
 	var got struct {
@@ -369,7 +369,7 @@ func TestSettingsAndAliases(t *testing.T) {
 		Aliases  map[string]string `json:"aliases"`
 	}
 	json.NewDecoder(do(t, "GET", ts.URL+"/api/settings", "").Body).Decode(&got)
-	if got.Settings.RetentionDays != 30 || got.Settings.MaxUpload != 2097152 || got.Aliases["nothing-phone-3a"] != "mi móvil" {
+	if got.Settings.RetentionDays != 30 || got.Settings.MaxUpload != 2097152 || got.Aliases["pixel-phone"] != "mi móvil" {
 		t.Fatalf("settings = %+v", got)
 	}
 }
