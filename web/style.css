@@ -223,7 +223,7 @@ button { font: inherit; color: inherit; }
 }
 .tool:hover { color: var(--text); border-color: var(--text); }
 .tool.danger.confirm, .tool.danger:hover { color: var(--flame-6); border-color: var(--flame-6); }
-.menu-btn { display: none; }
+.icon-btn.menu-btn { display: none; }
 
 .log {
   flex: 1;
@@ -492,7 +492,7 @@ button { font: inherit; color: inherit; }
   .devices-panel .panel-title { left: 20px; }
   .app.drawer .sidebar, .app.drawer .devices-panel { transform: none; }
   .scrim { display: block; position: fixed; inset: 0; z-index: 14; background: rgb(0 0 0 / 0.7); }
-  .menu-btn { display: grid; position: absolute; left: 4px; top: 4px; z-index: 2; }
+  .icon-btn.menu-btn { display: grid; position: absolute; left: 4px; top: 4px; z-index: 2; }
   .chat-head { min-height: 40px; }
   .chat-title { left: 44px; max-width: calc(100% - 120px); }
   .chat-tools { opacity: 1; top: 8px; }
