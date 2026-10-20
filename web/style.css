@@ -58,7 +58,7 @@ button { font: inherit; color: inherit; }
 
 .app {
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr);
+  grid-template-columns: 250px minmax(0, 1fr) 230px;
   gap: var(--gap);
   height: 100dvh;
   padding: calc(var(--gap) + env(safe-area-inset-top)) var(--gap) calc(var(--gap) + env(safe-area-inset-bottom));
@@ -160,8 +160,8 @@ button { font: inherit; color: inherit; }
 
 /* ---------- devices ---------- */
 
-.devices-panel { flex: none; padding: 12px 0 6px; }
-.device-list { list-style: none; margin: 0; padding: 0; max-height: 32vh; overflow-y: auto; }
+.devices-panel { padding: 14px 0 6px; }
+.device-list { list-style: none; margin: 0; padding: 0; height: 100%; overflow-y: auto; }
 .device {
   display: flex;
   align-items: center;
@@ -463,21 +463,34 @@ button { font: inherit; color: inherit; }
 
 /* ---------- small screens: sidebar becomes a drawer ---------- */
 
+@media (max-width: 1000px) {
+  .app { grid-template-columns: 210px minmax(0, 1fr) 190px; }
+}
+
 @media (max-width: 760px) {
   :root { --gap: 6px; }
   .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar {
+  /* Drawer: chats take the top 70%, devices the bottom 30%. */
+  .sidebar, .devices-panel {
     position: fixed;
-    inset: 0 auto 0 0;
+    left: 0;
     z-index: 15;
     width: min(300px, 86vw);
-    padding: calc(14px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom));
     background: var(--bg);
+    border: 0;
     border-right: 1px solid var(--line-strong);
     transform: translateX(-102%);
     transition: transform 0.18s ease-out;
   }
-  .app.drawer .sidebar { transform: none; }
+  .sidebar { top: 0; height: 70dvh; padding: calc(14px + env(safe-area-inset-top)) 10px 10px; }
+  .devices-panel {
+    top: 70dvh;
+    height: 30dvh;
+    padding: 18px 0 calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line-strong);
+  }
+  .devices-panel .panel-title { left: 20px; }
+  .app.drawer .sidebar, .app.drawer .devices-panel { transform: none; }
   .scrim { display: block; position: fixed; inset: 0; z-index: 14; background: rgb(0 0 0 / 0.7); }
   .menu-btn { display: grid; position: absolute; left: 4px; top: 4px; z-index: 2; }
   .chat-head { min-height: 40px; }
