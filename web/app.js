@@ -59,13 +59,16 @@ const storage = {
 };
 
 const coarse = matchMedia("(pointer: coarse)").matches;
-const PREF_DEFAULTS = { lang: "auto", size: 13, enterSends: !coarse, notify: false };
+const PREF_DEFAULTS = { lang: "auto", size: 13, enterSends: !coarse, notify: false, anim: true };
 const prefs = { ...PREF_DEFAULTS };
 try {
   Object.assign(prefs, JSON.parse(storage.get("pneuma.prefs") || "{}"));
 } catch {}
 const savePrefs = () => storage.set("pneuma.prefs", JSON.stringify(prefs));
 document.documentElement.style.setProperty("--fs", `${prefs.size}px`);
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const applyAnim = () => document.documentElement.classList.toggle("anim", prefs.anim && !reducedMotion);
+applyAnim();
 
 // ---------- i18n ----------
 
@@ -106,6 +109,7 @@ const STRINGS = {
     textSize: "text size",
     enterSends: "enter sends",
     notifications: "notifications",
+    animations: "animations",
     allDevices: "all devices",
     retention: "delete messages after",
     forever: "never",
@@ -170,6 +174,7 @@ const STRINGS = {
     textSize: "tamaño de texto",
     enterSends: "enter envía",
     notifications: "notificaciones",
+    animations: "animaciones",
     allDevices: "todos los dispositivos",
     retention: "borrar mensajes tras",
     forever: "nunca",
@@ -892,6 +897,7 @@ const ui = {
   size: $("set-size"),
   enter: $("set-enter"),
   notify: $("set-notify"),
+  anim: $("set-anim"),
   retention: $("set-retention"),
   fileRetention: $("set-file-retention"),
   max: $("set-max"),
@@ -902,6 +908,7 @@ async function openSettings() {
   ui.lang.value = prefs.lang;
   ui.size.value = String(prefs.size);
   ui.enter.checked = prefs.enterSends;
+  ui.anim.checked = prefs.anim;
   ui.notify.checked = prefs.notify && "Notification" in window && Notification.permission === "granted";
   els.settings.showModal();
   try {
@@ -933,6 +940,11 @@ ui.size.addEventListener("change", () => {
   prefs.size = Number(ui.size.value);
   savePrefs();
   document.documentElement.style.setProperty("--fs", `${prefs.size}px`);
+});
+ui.anim.addEventListener("change", () => {
+  prefs.anim = ui.anim.checked;
+  savePrefs();
+  applyAnim();
 });
 ui.enter.addEventListener("change", () => {
   prefs.enterSends = ui.enter.checked;
