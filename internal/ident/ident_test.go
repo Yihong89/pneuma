@@ -27,6 +27,7 @@ func (f fakeWhoIs) Status(context.Context) (*ipnstate.Status, error) { return f.
 func peer(name, os, login string, tags ...string) *apitype.WhoIsResponse {
 	return &apitype.WhoIsResponse{
 		Node: &tailcfg.Node{
+			StableID:     tailcfg.StableNodeID("n-" + name),
 			Name:         name + ".example.ts.net.",
 			ComputedName: name,
 			Hostinfo:     (&tailcfg.Hostinfo{OS: os}).View(),
@@ -64,8 +65,8 @@ func TestTailscaleIdentify(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if s.Device != tc.device {
-				t.Fatalf("device = %q, want %q", s.Device, tc.device)
+			if s.Device != tc.device || s.ID != "n-"+tc.device {
+				t.Fatalf("got %q (%q), want %q", s.Device, s.ID, tc.device)
 			}
 		})
 	}
@@ -83,7 +84,7 @@ func TestDevices(t *testing.T) {
 	tags := views.SliceOf([]string{"tag:server"})
 	st := &ipnstate.Status{
 		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
-			key.NewNode().Public(): {DNSName: "mac-mini.x.ts.net.", OS: "macOS", Online: true, UserID: 1},
+			key.NewNode().Public(): {ID: "n-mac", DNSName: "mac-mini.x.ts.net.", OS: "macOS", Online: true, UserID: 1},
 			key.NewNode().Public(): {DNSName: "phone.x.ts.net.", OS: "android", UserID: 1},
 			key.NewNode().Public(): {DNSName: "prod.x.ts.net.", OS: "linux", Online: true, UserID: 2, Tags: &tags},
 			key.NewNode().Public(): {DNSName: "friend.x.ts.net.", OS: "linux", Online: true, UserID: 3},
@@ -100,7 +101,7 @@ func TestDevices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(devs) != 2 || devs[0].Name != "mac-mini" || !devs[0].Online || devs[1].Name != "phone" || devs[1].OS != "android" {
+	if len(devs) != 2 || devs[0].Name != "mac-mini" || devs[0].ID != "n-mac" || !devs[0].Online || devs[1].Name != "phone" || devs[1].OS != "android" {
 		t.Fatalf("devices = %+v", devs)
 	}
 }

@@ -20,7 +20,22 @@ import (
 	"github.com/ericpastorm/pneuma/internal/store"
 )
 
+type fakeDevices []ident.Device
+
+func (f fakeDevices) Devices(context.Context) ([]ident.Device, error) { return f, nil }
+
+// tailnet is the set of devices the private-chat tests know about.
+var tailnet = fakeDevices{
+	{ID: ident.DevID("laptop"), Name: "laptop"},
+	{ID: ident.DevID("mac-mini"), Name: "mac-mini"},
+	{ID: ident.DevID("phone"), Name: "phone"},
+}
+
 func newServer(t *testing.T, id ident.Identifier) *httptest.Server {
+	return newServerWith(t, id, nil)
+}
+
+func newServerWith(t *testing.T, id ident.Identifier, devices ident.DeviceLister) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -33,6 +48,7 @@ func newServer(t *testing.T, id ident.Identifier) *httptest.Server {
 		Ident:     id,
 		Web:       fstest.MapFS{"index.html": {Data: []byte("<h1>pneuma</h1>")}},
 		MaxUpload: 1 << 20,
+		Devices:   devices,
 	}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -381,8 +397,11 @@ func as(t *testing.T, ts *httptest.Server, device, method, path, body string) *h
 }
 
 func TestPrivateChats(t *testing.T) {
-	ts := newServer(t, ident.Dev{})
-	res := as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["mac-mini"]}`)
+	ts := newServerWith(t, ident.Dev{}, tailnet)
+	if res := as(t, ts, "laptop", "POST", "/api/chats", `{"name":"x","members":["dev:stranger"]}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("chat with unknown device = %d", res.StatusCode)
+	}
+	res := as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["dev:mac-mini"]}`)
 	var c store.Chat
 	json.NewDecoder(res.Body).Decode(&c)
 	if res.StatusCode != http.StatusCreated || len(c.Members) != 2 {
@@ -412,7 +431,7 @@ func TestPrivateChats(t *testing.T) {
 		{"POST", "/api/chats/" + id + "/messages", `{"text":"hi"}`},
 		{"PATCH", "/api/chats/" + id, `{"name":"mine now"}`},
 		{"DELETE", "/api/chats/" + id, ""},
-		{"POST", "/api/chats/" + id + "/members", `{"device":"phone"}`},
+		{"POST", "/api/chats/" + id + "/members", `{"device":"dev:phone"}`},
 		{"GET", fileURL, ""},
 		{"DELETE", "/api/messages/" + strconv.FormatInt(files[0].ID, 10), ""},
 	} {
@@ -422,7 +441,10 @@ func TestPrivateChats(t *testing.T) {
 	}
 
 	// Members can add someone, who then gets in.
-	if res := as(t, ts, "laptop", "POST", "/api/chats/"+id+"/members", `{"device":"phone"}`); res.StatusCode != http.StatusOK {
+	if res := as(t, ts, "laptop", "POST", "/api/chats/"+id+"/members", `{"device":"dev:ghost"}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("add unknown device = %d", res.StatusCode)
+	}
+	if res := as(t, ts, "laptop", "POST", "/api/chats/"+id+"/members", `{"device":"dev:phone"}`); res.StatusCode != http.StatusOK {
 		t.Fatalf("add member = %d", res.StatusCode)
 	}
 	if res := as(t, ts, "phone", "GET", fileURL, ""); res.StatusCode != http.StatusOK {
@@ -431,7 +453,7 @@ func TestPrivateChats(t *testing.T) {
 }
 
 func TestPrivateEventsStayPrivate(t *testing.T) {
-	ts := newServer(t, ident.Dev{})
+	ts := newServerWith(t, ident.Dev{}, tailnet)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events?as=phone", nil)
@@ -455,7 +477,7 @@ func TestPrivateEventsStayPrivate(t *testing.T) {
 	<-lines // subscribed
 
 	var c store.Chat
-	json.NewDecoder(as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["mac-mini"]}`).Body).Decode(&c)
+	json.NewDecoder(as(t, ts, "laptop", "POST", "/api/chats", `{"name":"secret","members":["dev:mac-mini"]}`).Body).Decode(&c)
 	as(t, ts, "laptop", "POST", "/api/chats/"+strconv.FormatInt(c.ID, 10)+"/messages", `{"text":"psst"}`)
 	as(t, ts, "laptop", "POST", "/api/chats/1/messages", `{"text":"public"}`)
 

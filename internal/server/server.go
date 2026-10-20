@@ -366,7 +366,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	events, unsubscribe, joined := s.Hub.Subscribe(ident.SenderFrom(r.Context()).Device)
+	me := ident.SenderFrom(r.Context())
+	events, unsubscribe, joined := s.Hub.Subscribe(me.Device, me.ID)
 	defer func() {
 		if unsubscribe() {
 			s.publishPresence()
@@ -429,7 +430,7 @@ func (s *Server) chatFor(r *http.Request, id int64) (*store.Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !c.Visible(ident.SenderFrom(r.Context()).Device) {
+	if !c.Visible(ident.SenderFrom(r.Context()).ID) {
 		return nil, store.ErrNotFound
 	}
 	return c, nil
@@ -453,7 +454,7 @@ func (s *Server) visibleChats(r *http.Request) ([]*store.Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	me := ident.SenderFrom(r.Context()).Device
+	me := ident.SenderFrom(r.Context()).ID
 	out := []*store.Chat{}
 	for _, c := range all {
 		if c.Visible(me) {
@@ -489,8 +490,14 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Members) > 0 {
+		for _, id := range req.Members {
+			if !s.knownDevice(r, id) {
+				http.Error(w, "unknown device", http.StatusBadRequest)
+				return
+			}
+		}
 		// A private chat always includes whoever creates it.
-		req.Members = append(req.Members, ident.SenderFrom(r.Context()).Device)
+		req.Members = append(req.Members, ident.SenderFrom(r.Context()).ID)
 	}
 	c, err := s.Store.CreateChat(r.Context(), name, req.Members...)
 	if err != nil {
@@ -515,6 +522,10 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(c.Members) == 0 {
 		http.Error(w, "chat is already open to every device", http.StatusBadRequest)
+		return
+	}
+	if !s.knownDevice(r, req.Device) {
+		http.Error(w, "unknown device", http.StatusBadRequest)
 		return
 	}
 	c, err := s.Store.AddMember(r.Context(), c.ID, req.Device)
@@ -585,6 +596,37 @@ func cleanChatName(name string) (string, bool) {
 
 // ---- devices ----
 
+// knownDevice reports whether id is a device that may use pneuma right now:
+// a current tailnet peer passing the access rules, or the requester itself.
+// In dev mode, any device that has pneuma open counts.
+func (s *Server) knownDevice(r *http.Request, id string) bool {
+	if id == "" {
+		return false
+	}
+	if id == ident.SenderFrom(r.Context()).ID {
+		return true
+	}
+	if s.Devices == nil {
+		for _, name := range s.Hub.Active() {
+			if ident.DevID(name) == id {
+				return true
+			}
+		}
+		return false
+	}
+	devices, err := s.Devices.Devices(r.Context())
+	if err != nil {
+		log.Printf("list devices: %v", err)
+		return false
+	}
+	for _, d := range devices {
+		if d.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 type deviceStatus struct {
 	ident.Device
 	Active bool `json:"active"` // has pneuma open right now
@@ -617,7 +659,11 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			if name == me.Device {
 				os = me.OS
 			}
-			out = append(out, deviceStatus{Device: ident.Device{Name: name, OS: os, Online: true}, Active: true})
+			id := ident.DevID(name)
+			if name == me.Device {
+				id = me.ID
+			}
+			out = append(out, deviceStatus{Device: ident.Device{ID: id, Name: name, OS: os, Online: true}, Active: true})
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

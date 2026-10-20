@@ -30,6 +30,7 @@ type LocalClient interface {
 
 // Device is a machine on the tailnet that may use pneuma.
 type Device struct {
+	ID     string `json:"id"` // stable node ID
 	Name   string `json:"name"`
 	OS     string `json:"os"`
 	Online bool   `json:"online"` // connected to the tailnet
@@ -74,7 +75,7 @@ func (t *Tailscale) Identify(r *http.Request) (store.Sender, error) {
 	if who.Node.Hostinfo.Valid() {
 		os = who.Node.Hostinfo.OS()
 	}
-	return store.Sender{Device: device, OS: strings.ToLower(os), User: login}, nil
+	return store.Sender{ID: string(who.Node.StableID), Device: device, OS: strings.ToLower(os), User: login}, nil
 }
 
 func (t *Tailscale) userAllowed(login string) bool {
@@ -103,7 +104,7 @@ func (t *Tailscale) Devices(ctx context.Context) ([]Device, error) {
 		if name == "" {
 			name = p.HostName
 		}
-		out = append(out, Device{Name: name, OS: strings.ToLower(p.OS), Online: p.Online})
+		out = append(out, Device{ID: string(p.ID), Name: name, OS: strings.ToLower(p.OS), Online: p.Online})
 	}
 	slices.SortFunc(out, func(a, b Device) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
@@ -119,6 +120,7 @@ func (Dev) Identify(r *http.Request) (store.Sender, error) {
 	if as := r.URL.Query().Get("as"); as != "" {
 		s.Device = as
 	}
+	s.ID = DevID(s.Device)
 	switch {
 	case strings.Contains(s.Device, "mac"):
 		s.OS = "macos"
@@ -127,6 +129,9 @@ func (Dev) Identify(r *http.Request) (store.Sender, error) {
 	}
 	return s, nil
 }
+
+// DevID is the stable ID a device gets in dev mode.
+func DevID(device string) string { return "dev:" + device }
 
 type ctxKey struct{}
 

@@ -254,6 +254,13 @@ const state = {
 
 const displayName = (device) => state.aliases[device] || device;
 
+// Chat members are stable node IDs; show them by (aliased) device name.
+function memberName(id) {
+  if (id === state.me?.id) return displayName(state.me.device);
+  const d = state.devices.find((x) => x.id === id);
+  return d ? displayName(d.name) : "?";
+}
+
 // ---------- Formatting ----------
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
@@ -568,7 +575,7 @@ function renderChats() {
       "li",
       {
         class: `chat-item${c.id === state.chat ? " current" : ""}`,
-        title: c.members ? c.members.map(displayName).join(", ") : "",
+        title: c.members ? c.members.map(memberName).join(", ") : "",
         onclick: () => selectChat(c.id),
       },
       el("span", { class: "name" }, c.name),
@@ -586,7 +593,7 @@ function renderChats() {
   els.chatTitle.textContent = current ? current.name : "";
   els.chatMembers.hidden = !current?.members;
   if (current?.members) {
-    els.chatMembers.replaceChildren(lockIcon("lock-h"), current.members.map(displayName).join(", "));
+    els.chatMembers.replaceChildren(lockIcon("lock-h"), current.members.map(memberName).join(", "));
     els.chatMembers.title = t.privateChat;
   }
   document.title = current ? `${current.name} · pneuma` : "pneuma";
@@ -795,6 +802,7 @@ async function loadDevices() {
     state.devices = await getJSON("/api/devices");
     state.active = new Set(state.devices.filter((d) => d.active).map((d) => d.name));
     renderDevices();
+    renderChats(); // member names come from the device list
   } catch (err) {
     console.error(err);
   }
@@ -817,9 +825,9 @@ function renderDevices() {
       const items = () => {
         const current = state.chats.get(state.chat);
         return [
-          ...(here ? [] : [{ label: t.startChat, action: () => startPrivateChat(d.name) }]),
-          ...(!here && current?.members && !current.members.includes(d.name)
-            ? [{ label: t.addToChat(current.name), action: () => addMember(current.id, d.name) }]
+          ...(here ? [] : [{ label: t.startChat, action: () => startPrivateChat(d) }]),
+          ...(!here && current?.members && !current.members.includes(d.id)
+            ? [{ label: t.addToChat(current.name), action: () => addMember(current.id, d.id) }]
             : []),
           { label: t.renameDevice, action: rename },
           ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
@@ -839,13 +847,12 @@ function renderDevices() {
 }
 
 // Opens the private chat with exactly {me, device}, creating it if needed.
-async function startPrivateChat(device) {
-  const me = state.me.device;
-  const want = [me, device].sort().join("\n");
+async function startPrivateChat(d) {
+  const want = [state.me.id, d.id].sort().join("\n");
   const existing = [...state.chats.values()].find((c) => c.members && [...c.members].sort().join("\n") === want);
   if (existing) return selectChat(existing.id);
   try {
-    const c = await request("POST", "/api/chats", { name: displayName(device), members: [device] });
+    const c = await request("POST", "/api/chats", { name: displayName(d.name), members: [d.id] });
     upsertChat(c);
     selectChat(c.id);
   } catch (err) {

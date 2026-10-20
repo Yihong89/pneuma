@@ -4,9 +4,9 @@ import "testing"
 
 func TestAudience(t *testing.T) {
 	h := New()
-	a, _, _ := h.Subscribe("laptop")
-	b, _, _ := h.Subscribe("phone")
-	h.Publish(Event{Type: "message", Audience: []string{"laptop"}})
+	a, _, _ := h.Subscribe("laptop", "id-laptop")
+	b, _, _ := h.Subscribe("phone", "id-phone")
+	h.Publish(Event{Type: "message", Audience: []string{"id-laptop"}})
 	h.Publish(Event{Type: "presence"})
 	if e := <-a; e.Type != "message" {
 		t.Fatalf("laptop got %q first", e.Type)

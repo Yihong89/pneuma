@@ -11,7 +11,8 @@ import (
 type Event struct {
 	Type string // "message", "delete", "chat", "chat_delete", "presence", ...
 	Data []byte // JSON payload
-	// Audience limits delivery to these devices; empty means everyone.
+	// Audience limits delivery to these stable device IDs; empty means
+	// everyone.
 	Audience []string
 }
 
@@ -19,21 +20,24 @@ type Event struct {
 // blocking the publisher; clients resync when they reconnect.
 type Hub struct {
 	mu     sync.Mutex
-	subs   map[chan Event]string // channel -> device
-	active map[string]int        // device -> open connections
+	subs   map[chan Event]sub
+	active map[string]int // device -> open connections
 }
+
+type sub struct{ device, id string }
 
 func New() *Hub {
-	return &Hub{subs: make(map[chan Event]string), active: make(map[string]int)}
+	return &Hub{subs: make(map[chan Event]sub), active: make(map[string]int)}
 }
 
-// Subscribe registers a connection from device. It returns a channel of
-// events and a function to unsubscribe. changed reports whether the device
-// just came online, so the caller can announce it.
-func (h *Hub) Subscribe(device string) (events <-chan Event, unsubscribe func() (changed bool), changed bool) {
+// Subscribe registers a connection from a device (display name and stable
+// ID). It returns a channel of events and a function to unsubscribe.
+// changed reports whether the device just came online, so the caller can
+// announce it.
+func (h *Hub) Subscribe(device, id string) (events <-chan Event, unsubscribe func() (changed bool), changed bool) {
 	ch := make(chan Event, 64)
 	h.mu.Lock()
-	h.subs[ch] = device
+	h.subs[ch] = sub{device, id}
 	h.active[device]++
 	changed = h.active[device] == 1
 	h.mu.Unlock()
@@ -47,10 +51,11 @@ func (h *Hub) Subscribe(device string) (events <-chan Event, unsubscribe func() 
 // drop removes a subscriber; h.mu must be held. It reports whether its
 // device went offline as a result.
 func (h *Hub) drop(ch chan Event) bool {
-	device, ok := h.subs[ch]
+	s, ok := h.subs[ch]
 	if !ok {
 		return false
 	}
+	device := s.device
 	delete(h.subs, ch)
 	close(ch)
 	h.active[device]--
@@ -77,8 +82,8 @@ func (h *Hub) Active() []string {
 func (h *Hub) Publish(e Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch, device := range h.subs {
-		if len(e.Audience) > 0 && !slices.Contains(e.Audience, device) {
+	for ch, s := range h.subs {
+		if len(e.Audience) > 0 && !slices.Contains(e.Audience, s.id) {
 			continue
 		}
 		select {

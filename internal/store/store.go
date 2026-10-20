@@ -42,6 +42,11 @@ const (
 
 // Sender identifies the device that created a message.
 type Sender struct {
+	// ID is the device's stable tailnet node ID. Unlike Device (its
+	// MagicDNS name, which a different machine could take over later) it
+	// never changes, so it is what chat membership is based on. It is not
+	// stored with messages.
+	ID     string `json:"id,omitempty"`
 	Device string `json:"device"`
 	OS     string `json:"os"`
 	User   string `json:"user"`
@@ -64,14 +69,14 @@ type Chat struct {
 	// LastAt is the time of the newest message, or CreatedAt if empty.
 	LastAt time.Time `json:"last_at"`
 	Count  int64     `json:"count"`
-	// Members restricts the chat to these devices. Empty means every
-	// device on the tailnet can see it.
+	// Members restricts the chat to these devices, by stable node ID.
+	// Empty means every device on the tailnet can see it.
 	Members []string `json:"members,omitempty"`
 }
 
-// Visible reports whether device may see the chat.
-func (c *Chat) Visible(device string) bool {
-	return len(c.Members) == 0 || slices.Contains(c.Members, device)
+// Visible reports whether the device with this stable ID may see the chat.
+func (c *Chat) Visible(deviceID string) bool {
+	return len(c.Members) == 0 || (deviceID != "" && slices.Contains(c.Members, deviceID))
 }
 
 func encodeMembers(m []string) string { return strings.Join(m, "\n") }
@@ -435,7 +440,7 @@ func (s *Store) CreateChat(ctx context.Context, name string, members ...string) 
 	return s.Chat(ctx, id)
 }
 
-// AddMember gives device access to a private chat.
+// AddMember gives a device (by stable ID) access to a private chat.
 func (s *Store) AddMember(ctx context.Context, id int64, device string) (*Chat, error) {
 	c, err := s.Chat(ctx, id)
 	if err != nil {
