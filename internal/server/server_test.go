@@ -214,3 +214,48 @@ func TestForbiddenDevice(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossOriginPostRejected(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/messages", strings.NewReader(`{"text":"pwned"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("Origin", "https://evil.example")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", res.StatusCode)
+	}
+
+	// The browser-initiated share target navigation must still work.
+	body, ctype := multipartBody(t, map[string]string{"text": "shared"}, nil)
+	req, _ = http.NewRequest("POST", ts.URL+"/share", body)
+	req.Header.Set("Content-Type", ctype)
+	req.Header.Set("Sec-Fetch-Site", "none")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("share status = %d", res.StatusCode)
+	}
+}
+
+func TestFormFieldBudget(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	fields := map[string]string{}
+	for i := range 3 {
+		fields["junk"+strconv.Itoa(i)] = strings.Repeat("x", MaxTextLen/2)
+	}
+	body, ctype := multipartBody(t, fields, nil)
+	res, err := http.Post(ts.URL+"/share", ctype, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", res.StatusCode)
+	}
+}

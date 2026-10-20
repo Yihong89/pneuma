@@ -45,7 +45,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /f/{id}/{name}", s.handleDownload)
 	mux.HandleFunc("POST /share", s.handleShare)
 	mux.Handle("GET /", s.static())
-	return s.authenticate(mux)
+	// Any tailnet device's browser carries its identity, so a hostile page
+	// open on one of them must not be able to post or delete on its behalf.
+	return s.authenticate(http.NewCrossOriginProtection().Handler(mux))
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -200,6 +202,7 @@ func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request) ([]*st
 	}
 	sender := ident.SenderFrom(r.Context())
 	fields := map[string]string{}
+	fieldBudget := int64(MaxTextLen) // shared by all non-file fields
 	var msgs []*store.Message
 	for {
 		part, err := mr.NextPart()
@@ -210,12 +213,18 @@ func (s *Server) receiveMultipart(w http.ResponseWriter, r *http.Request) ([]*st
 			return msgs, fields, err
 		}
 		if part.FileName() == "" {
-			b, err := io.ReadAll(io.LimitReader(part, MaxTextLen))
+			b, err := io.ReadAll(io.LimitReader(part, fieldBudget+1))
 			part.Close()
 			if err != nil {
 				return msgs, fields, err
 			}
-			fields[part.FormName()] = string(b)
+			if fieldBudget -= int64(len(b)); fieldBudget < 0 {
+				return msgs, fields, store.ErrTooLarge
+			}
+			switch name := part.FormName(); name {
+			case "title", "text", "url":
+				fields[name] = string(b)
+			}
 			continue
 		}
 		name := cleanName(part.FileName())
