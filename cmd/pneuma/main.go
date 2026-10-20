@@ -80,7 +80,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv.Ident = &ident.Tailscale{Client: lc, AllowTagged: *allowTag, AllowedUsers: splitList(*users)}
+	tsIdent := &ident.Tailscale{Client: lc, AllowTagged: *allowTag, AllowedUsers: splitList(*users)}
+	srv.Ident, srv.Devices = tsIdent, tsIdent
 
 	ln, err := ts.ListenTLS("tcp", ":443")
 	if err != nil {

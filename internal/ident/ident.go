@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/ipn/ipnstate"
 
 	"github.com/ericpastorm/pneuma/internal/store"
 )
@@ -21,15 +22,28 @@ type Identifier interface {
 	Identify(r *http.Request) (store.Sender, error)
 }
 
-// WhoIser is the part of tailscale.com/client/local.Client we need.
-type WhoIser interface {
+// LocalClient is the part of tailscale.com/client/local.Client we need.
+type LocalClient interface {
 	WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
+	Status(ctx context.Context) (*ipnstate.Status, error)
+}
+
+// Device is a machine on the tailnet that may use pneuma.
+type Device struct {
+	Name   string `json:"name"`
+	OS     string `json:"os"`
+	Online bool   `json:"online"` // connected to the tailnet
+}
+
+// DeviceLister lists the devices that could talk to pneuma.
+type DeviceLister interface {
+	Devices(ctx context.Context) ([]Device, error)
 }
 
 // Tailscale identifies peers through the tailnet's WhoIs API, so there is
 // nothing to log in to: the device is the credential.
 type Tailscale struct {
-	Client WhoIser
+	Client LocalClient
 	// AllowTagged lets tagged nodes (servers, CI boxes...) in. Off by default
 	// because tagged nodes are not owned by a person.
 	AllowTagged bool
@@ -49,7 +63,7 @@ func (t *Tailscale) Identify(r *http.Request) (store.Sender, error) {
 		return store.Sender{}, ErrForbidden
 	}
 	login := who.UserProfile.LoginName
-	if len(t.AllowedUsers) > 0 && !slices.Contains(t.AllowedUsers, login) {
+	if !t.userAllowed(login) {
 		return store.Sender{}, ErrForbidden
 	}
 	device := who.Node.ComputedName
@@ -61,6 +75,35 @@ func (t *Tailscale) Identify(r *http.Request) (store.Sender, error) {
 		os = who.Node.Hostinfo.OS()
 	}
 	return store.Sender{Device: device, OS: strings.ToLower(os), User: login}, nil
+}
+
+func (t *Tailscale) userAllowed(login string) bool {
+	return len(t.AllowedUsers) == 0 || slices.Contains(t.AllowedUsers, login)
+}
+
+// Devices lists the tailnet devices that pass the same rules as Identify,
+// so pneuma never shows a machine that couldn't actually use it.
+func (t *Tailscale) Devices(ctx context.Context) ([]Device, error) {
+	st, err := t.Client.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []Device
+	for _, p := range st.Peer {
+		if p.Tags != nil && p.Tags.Len() > 0 && !t.AllowTagged {
+			continue
+		}
+		if u, ok := st.User[p.UserID]; ok && !t.userAllowed(u.LoginName) {
+			continue
+		}
+		name, _, _ := strings.Cut(p.DNSName, ".")
+		if name == "" {
+			name = p.HostName
+		}
+		out = append(out, Device{Name: name, OS: strings.ToLower(p.OS), Online: p.Online})
+	}
+	slices.SortFunc(out, func(a, b Device) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
 }
 
 // Dev is used outside a tailnet for local development. The device name can

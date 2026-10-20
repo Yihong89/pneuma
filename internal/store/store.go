@@ -51,9 +51,20 @@ type File struct {
 	SHA256 string `json:"sha256"`
 }
 
+// Chat is a conversation thread. Every message belongs to one.
+type Chat struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	// LastAt is the time of the newest message, or CreatedAt if empty.
+	LastAt time.Time `json:"last_at"`
+	Count  int64     `json:"count"`
+}
+
 // Message is a single chat entry: either a piece of text or a file.
 type Message struct {
 	ID        int64     `json:"id"`
+	ChatID    int64     `json:"chat_id"`
 	CreatedAt time.Time `json:"created_at"`
 	Sender
 	Kind Kind   `json:"kind"`
@@ -68,6 +79,11 @@ type Store struct {
 }
 
 const schema = `
+CREATE TABLE IF NOT EXISTS chats (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	name       TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS files (
 	id     TEXT PRIMARY KEY,
 	name   TEXT NOT NULL,
@@ -83,9 +99,40 @@ CREATE TABLE IF NOT EXISTS messages (
 	user       TEXT NOT NULL,
 	kind       TEXT NOT NULL,
 	body       TEXT NOT NULL DEFAULT '',
-	file_id    TEXT REFERENCES files(id)
+	file_id    TEXT REFERENCES files(id),
+	chat_id    INTEGER NOT NULL DEFAULT 1 REFERENCES chats(id)
 );
 `
+
+// migrate brings databases created by older versions up to date.
+func migrate(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	// v0.1 had no chats: everything lands in chat 1.
+	var hasChat int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'chat_id'`).Scan(&hasChat); err != nil {
+		return err
+	}
+	if hasChat == 0 {
+		// SQLite can't add a REFERENCES column with a non-NULL default.
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS messages_chat ON messages(chat_id, id)`); err != nil {
+		return err
+	}
+	return ensureChat(db)
+}
+
+// ensureChat makes sure there is always at least one chat to write to.
+func ensureChat(db *sql.DB) error {
+	_, err := db.Exec(`INSERT INTO chats (id, name, created_at)
+		SELECT COALESCE((SELECT MIN(chat_id) FROM messages), 1), 'general', ?
+		WHERE NOT EXISTS (SELECT 1 FROM chats)`, time.Now().UnixMilli())
+	return err
+}
 
 // Open opens (creating if needed) the store rooted at dir.
 func Open(dir string) (*Store, error) {
@@ -102,7 +149,7 @@ func Open(dir string) (*Store, error) {
 	// SQLite allows a single writer; serialising through one connection
 	// avoids SQLITE_BUSY under concurrent uploads.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -113,13 +160,19 @@ func Open(dir string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 // AddText stores a text message.
-func (s *Store) AddText(ctx context.Context, from Sender, body string) (*Message, error) {
-	return s.insert(ctx, from, KindText, body, nil)
+func (s *Store) AddText(ctx context.Context, chat int64, from Sender, body string) (*Message, error) {
+	if err := s.chatExists(ctx, chat); err != nil {
+		return nil, err
+	}
+	return s.insert(ctx, chat, from, KindText, body, nil)
 }
 
 // AddFile streams r to disk and stores a file message. If more than max bytes
 // are read the partial file is removed and ErrTooLarge is returned.
-func (s *Store) AddFile(ctx context.Context, from Sender, name, mime string, r io.Reader, max int64) (*Message, error) {
+func (s *Store) AddFile(ctx context.Context, chat int64, from Sender, name, mime string, r io.Reader, max int64) (*Message, error) {
+	if err := s.chatExists(ctx, chat); err != nil {
+		return nil, err
+	}
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -151,7 +204,7 @@ func (s *Store) AddFile(ctx context.Context, from Sender, name, mime string, r i
 		os.Remove(path)
 		return nil, err
 	}
-	m, err := s.insert(ctx, from, KindFile, "", file)
+	m, err := s.insert(ctx, chat, from, KindFile, "", file)
 	if err != nil {
 		s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id)
 		os.Remove(path)
@@ -160,15 +213,15 @@ func (s *Store) AddFile(ctx context.Context, from Sender, name, mime string, r i
 	return m, nil
 }
 
-func (s *Store) insert(ctx context.Context, from Sender, kind Kind, body string, file *File) (*Message, error) {
-	m := &Message{CreatedAt: time.Now().UTC().Truncate(time.Millisecond), Sender: from, Kind: kind, Body: body, File: file}
+func (s *Store) insert(ctx context.Context, chat int64, from Sender, kind Kind, body string, file *File) (*Message, error) {
+	m := &Message{ChatID: chat, CreatedAt: time.Now().UTC().Truncate(time.Millisecond), Sender: from, Kind: kind, Body: body, File: file}
 	var fileID any
 	if file != nil {
 		fileID = file.ID
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (created_at, device, device_os, user, kind, body, file_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.CreatedAt.UnixMilli(), from.Device, from.OS, from.User, string(kind), body, fileID)
+		`INSERT INTO messages (chat_id, created_at, device, device_os, user, kind, body, file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		chat, m.CreatedAt.UnixMilli(), from.Device, from.OS, from.User, string(kind), body, fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,18 +232,18 @@ func (s *Store) insert(ctx context.Context, from Sender, kind Kind, body string,
 }
 
 const selectMessages = `
-SELECT m.id, m.created_at, m.device, m.device_os, m.user, m.kind, m.body,
+SELECT m.id, m.chat_id, m.created_at, m.device, m.device_os, m.user, m.kind, m.body,
        f.id, f.name, f.size, f.mime, f.sha256
 FROM messages m LEFT JOIN files f ON f.id = m.file_id`
 
-// List returns up to limit messages with id < before (or the newest when
-// before <= 0), in ascending id order.
-func (s *Store) List(ctx context.Context, before int64, limit int) ([]*Message, error) {
+// List returns up to limit messages of a chat with id < before (or the
+// newest when before <= 0), in ascending id order.
+func (s *Store) List(ctx context.Context, chat, before int64, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	q := selectMessages + ` WHERE (? <= 0 OR m.id < ?) ORDER BY m.id DESC LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, before, before, limit)
+	q := selectMessages + ` WHERE m.chat_id = ? AND (? <= 0 OR m.id < ?) ORDER BY m.id DESC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, q, chat, before, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +271,7 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 			fmime   sql.NullString
 			fsum    sql.NullString
 		)
-		if err := rows.Scan(&m.ID, &created, &m.Device, &m.OS, &m.User, &kind, &m.Body,
+		if err := rows.Scan(&m.ID, &m.ChatID, &created, &m.Device, &m.OS, &m.User, &kind, &m.Body,
 			&fid, &fname, &fsize, &fmime, &fsum); err != nil {
 			return nil, err
 		}
@@ -258,12 +311,137 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 		return err
 	}
 	if m.File != nil {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, m.File.ID); err != nil {
+		return s.removeFiles(ctx, []string{m.File.ID})
+	}
+	return nil
+}
+
+func (s *Store) removeFiles(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id); err != nil {
 			return err
 		}
-		if err := os.Remove(filepath.Join(s.filesDir, m.File.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(filepath.Join(s.filesDir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+	}
+	return nil
+}
+
+// ---- chats ----
+
+const selectChats = `
+SELECT c.id, c.name, c.created_at, COALESCE(MAX(m.created_at), c.created_at), COUNT(m.id)
+FROM chats c LEFT JOIN messages m ON m.chat_id = c.id`
+
+// Chats returns all chats, most recently active first.
+func (s *Store) Chats(ctx context.Context) ([]*Chat, error) {
+	rows, err := s.db.QueryContext(ctx, selectChats+` GROUP BY c.id ORDER BY 4 DESC, c.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var chats []*Chat
+	for rows.Next() {
+		var c Chat
+		var created, last int64
+		if err := rows.Scan(&c.ID, &c.Name, &created, &last, &c.Count); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, c.LastAt = time.UnixMilli(created).UTC(), time.UnixMilli(last).UTC()
+		chats = append(chats, &c)
+	}
+	return chats, rows.Err()
+}
+
+// Chat returns a single chat.
+func (s *Store) Chat(ctx context.Context, id int64) (*Chat, error) {
+	var c Chat
+	var created, last int64
+	err := s.db.QueryRowContext(ctx, selectChats+` WHERE c.id = ? GROUP BY c.id`, id).
+		Scan(&c.ID, &c.Name, &created, &last, &c.Count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.CreatedAt, c.LastAt = time.UnixMilli(created).UTC(), time.UnixMilli(last).UTC()
+	return &c, nil
+}
+
+// CreateChat adds a new, empty chat.
+func (s *Store) CreateChat(ctx context.Context, name string) (*Chat, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO chats (name, created_at) VALUES (?, ?)`, name, time.Now().UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return s.Chat(ctx, id)
+}
+
+// RenameChat changes a chat's name.
+func (s *Store) RenameChat(ctx context.Context, id int64, name string) (*Chat, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE chats SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrNotFound
+	}
+	return s.Chat(ctx, id)
+}
+
+// DeleteChat removes a chat with all its messages and files. If it was the
+// last chat, a fresh empty one is created so there is always somewhere to
+// write; it is returned (nil otherwise).
+func (s *Store) DeleteChat(ctx context.Context, id int64) (*Chat, error) {
+	if err := s.chatExists(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT file_id FROM messages WHERE chat_id = ? AND file_id IS NOT NULL`, id)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	rows.Close()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ?`, id); err != nil {
+		return nil, err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chats WHERE id = ?`, id); err != nil {
+		return nil, err
+	}
+	if err := s.removeFiles(ctx, files); err != nil {
+		return nil, err
+	}
+	var left int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats`).Scan(&left); err != nil {
+		return nil, err
+	}
+	if left == 0 {
+		return s.CreateChat(ctx, "general")
+	}
+	return nil, nil
+}
+
+func (s *Store) chatExists(ctx context.Context, id int64) error {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE id = ?`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

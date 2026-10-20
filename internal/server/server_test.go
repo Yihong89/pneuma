@@ -59,7 +59,7 @@ func multipartBody(t *testing.T, fields map[string]string, files map[string]stri
 
 func TestTextRoundTrip(t *testing.T) {
 	ts := newServer(t, ident.Dev{})
-	res, err := http.Post(ts.URL+"/api/messages?as=mac-mini", "application/json", strings.NewReader(`{"text":"hola"}`))
+	res, err := http.Post(ts.URL+"/api/chats/1/messages?as=mac-mini", "application/json", strings.NewReader(`{"text":"hola"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestTextRoundTrip(t *testing.T) {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
 
-	res, err = http.Get(ts.URL + "/api/messages")
+	res, err = http.Get(ts.URL + "/api/chats/1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestTextRoundTrip(t *testing.T) {
 		t.Fatalf("messages = %+v", msgs)
 	}
 
-	res, _ = http.Post(ts.URL+"/api/messages", "application/json", strings.NewReader(`{"text":"   "}`))
+	res, _ = http.Post(ts.URL+"/api/chats/1/messages", "application/json", strings.NewReader(`{"text":"   "}`))
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty message status = %d", res.StatusCode)
 	}
@@ -86,7 +86,7 @@ func TestTextRoundTrip(t *testing.T) {
 func TestUploadDownloadDelete(t *testing.T) {
 	ts := newServer(t, ident.Dev{})
 	body, ctype := multipartBody(t, nil, map[string]string{"a.txt": "alpha", "../../evil.svg": "<svg onload=alert(1)>"})
-	res, err := http.Post(ts.URL+"/api/files", ctype, body)
+	res, err := http.Post(ts.URL+"/api/chats/1/files", ctype, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestUploadDownloadDelete(t *testing.T) {
 func TestUploadTooLarge(t *testing.T) {
 	ts := newServer(t, ident.Dev{})
 	body, ctype := multipartBody(t, nil, map[string]string{"big.bin": strings.Repeat("x", 2<<20)})
-	res, err := http.Post(ts.URL+"/api/files", ctype, body)
+	res, err := http.Post(ts.URL+"/api/chats/1/files", ctype, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestShareTarget(t *testing.T) {
 	if res.StatusCode != http.StatusSeeOther {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
-	res, _ = http.Get(ts.URL + "/api/messages")
+	res, _ = http.Get(ts.URL + "/api/chats/1/messages")
 	var msgs []store.Message
 	json.NewDecoder(res.Body).Decode(&msgs)
 	if len(msgs) != 2 || msgs[0].Kind != store.KindFile || msgs[1].Body != "look https://example.com" {
@@ -180,14 +180,18 @@ func TestEventsStream(t *testing.T) {
 	r := bufio.NewReader(res.Body)
 	r.ReadString('\n') // retry line: the stream is subscribed
 
-	http.Post(ts.URL+"/api/messages?as=phone", "application/json", strings.NewReader(`{"text":"live"}`))
+	http.Post(ts.URL+"/api/chats/1/messages?as=phone", "application/json", strings.NewReader(`{"text":"live"}`))
 
+	event := ""
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
 			t.Fatalf("stream ended: %v", err)
 		}
-		if strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, "event: ") {
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+		}
+		if strings.HasPrefix(line, "data: ") && event == "message" {
 			var m store.Message
 			json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m)
 			if m.Body != "live" || m.Device != "phone" {
@@ -204,7 +208,7 @@ func (deny) Identify(*http.Request) (store.Sender, error) { return store.Sender{
 
 func TestForbiddenDevice(t *testing.T) {
 	ts := newServer(t, deny{})
-	for _, path := range []string{"/", "/api/messages", "/api/events"} {
+	for _, path := range []string{"/", "/api/chats", "/api/chats/1/messages", "/api/events", "/api/devices"} {
 		res, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -217,7 +221,7 @@ func TestForbiddenDevice(t *testing.T) {
 
 func TestCrossOriginPostRejected(t *testing.T) {
 	ts := newServer(t, ident.Dev{})
-	req, _ := http.NewRequest("POST", ts.URL+"/api/messages", strings.NewReader(`{"text":"pwned"}`))
+	req, _ := http.NewRequest("POST", ts.URL+"/api/chats/1/messages", strings.NewReader(`{"text":"pwned"}`))
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Set("Origin", "https://evil.example")
@@ -257,5 +261,72 @@ func TestFormFieldBudget(t *testing.T) {
 	}
 	if res.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", res.StatusCode)
+	}
+}
+
+func do(t *testing.T, method, url, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestChatsAPI(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	res := do(t, "POST", ts.URL+"/api/chats", `{"name":"  side   project "}`)
+	var c store.Chat
+	json.NewDecoder(res.Body).Decode(&c)
+	if res.StatusCode != http.StatusCreated || c.Name != "side project" {
+		t.Fatalf("create = %d %+v", res.StatusCode, c)
+	}
+	if res := do(t, "POST", ts.URL+"/api/chats", `{"name":""}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty name = %d", res.StatusCode)
+	}
+
+	id := strconv.FormatInt(c.ID, 10)
+	do(t, "POST", ts.URL+"/api/chats/"+id+"/messages", `{"text":"only here"}`)
+	if res := do(t, "POST", ts.URL+"/api/chats/999/messages", `{"text":"x"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing chat = %d", res.StatusCode)
+	}
+
+	var msgs []store.Message
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/chats/1/messages", "").Body).Decode(&msgs)
+	if len(msgs) != 0 {
+		t.Fatalf("message leaked into general: %+v", msgs)
+	}
+
+	if res := do(t, "PATCH", ts.URL+"/api/chats/"+id, `{"name":"renamed"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("rename = %d", res.StatusCode)
+	}
+	if res := do(t, "DELETE", ts.URL+"/api/chats/"+id, ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d", res.StatusCode)
+	}
+	var chats []store.Chat
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/chats", "").Body).Decode(&chats)
+	if len(chats) != 1 || chats[0].Name != "general" {
+		t.Fatalf("chats after delete = %+v", chats)
+	}
+}
+
+func TestDevicesShowsActive(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events?as=mac-mini", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	bufio.NewReader(res.Body).ReadString('\n')
+
+	var devs []deviceStatus
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/devices", "").Body).Decode(&devs)
+	if len(devs) != 1 || devs[0].Name != "mac-mini" || !devs[0].Active {
+		t.Fatalf("devices = %+v", devs)
 	}
 }

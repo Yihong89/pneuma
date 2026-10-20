@@ -2,12 +2,14 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var laptop = Sender{Device: "laptop", OS: "linux", User: "me@example.com"}
@@ -27,18 +29,18 @@ func TestTextAndPagination(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	for i := range 5 {
-		if _, err := s.AddText(ctx, laptop, strings.Repeat("x", i+1)); err != nil {
+		if _, err := s.AddText(ctx, 1, laptop, strings.Repeat("x", i+1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	latest, err := s.List(ctx, 0, 3)
+	latest, err := s.List(ctx, 1, 0, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(latest) != 3 || latest[0].ID != 3 || latest[2].ID != 5 {
 		t.Fatalf("latest page = %v", ids(latest))
 	}
-	older, err := s.List(ctx, latest[0].ID, 3)
+	older, err := s.List(ctx, 1, latest[0].ID, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func TestTextAndPagination(t *testing.T) {
 func TestFileLifecycle(t *testing.T) {
 	s, dir := open(t)
 	ctx := context.Background()
-	m, err := s.AddFile(ctx, laptop, "notes.txt", "text/plain", strings.NewReader("hello"), 100)
+	m, err := s.AddFile(ctx, 1, laptop, "notes.txt", "text/plain", strings.NewReader("hello"), 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +94,7 @@ func TestFileLifecycle(t *testing.T) {
 
 func TestFileTooLarge(t *testing.T) {
 	s, dir := open(t)
-	_, err := s.AddFile(context.Background(), laptop, "big.bin", "", strings.NewReader("0123456789"), 5)
+	_, err := s.AddFile(context.Background(), 1, laptop, "big.bin", "", strings.NewReader("0123456789"), 5)
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("err = %v, want ErrTooLarge", err)
 	}
@@ -100,7 +102,7 @@ func TestFileTooLarge(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("partial upload left behind: %v", entries)
 	}
-	if msgs, _ := s.List(context.Background(), 0, 10); len(msgs) != 0 {
+	if msgs, _ := s.List(context.Background(), 1, 0, 10); len(msgs) != 0 {
 		t.Fatalf("message created for rejected upload")
 	}
 }
@@ -111,7 +113,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.AddText(context.Background(), laptop, "still here")
+	s.AddText(context.Background(), 1, laptop, "still here")
 	s.Close()
 
 	s, err = Open(dir)
@@ -119,7 +121,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	msgs, _ := s.List(context.Background(), 0, 10)
+	msgs, _ := s.List(context.Background(), 1, 0, 10)
 	if len(msgs) != 1 || msgs[0].Body != "still here" {
 		t.Fatalf("after reopen: %+v", msgs)
 	}
@@ -131,4 +133,84 @@ func ids(msgs []*Message) []int64 {
 		out = append(out, m.ID)
 	}
 	return out
+}
+
+func TestChats(t *testing.T) {
+	s, dir := open(t)
+	ctx := context.Background()
+
+	chats, err := s.Chats(ctx)
+	if err != nil || len(chats) != 1 || chats[0].Name != "general" {
+		t.Fatalf("default chats = %+v, %v", chats, err)
+	}
+	general := chats[0].ID
+
+	work, err := s.CreateChat(ctx, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.AddText(ctx, work.ID, laptop, "in work")
+	m, _ := s.AddFile(ctx, work.ID, laptop, "a.txt", "text/plain", strings.NewReader("a"), 10)
+	time.Sleep(5 * time.Millisecond) // make "general" strictly the most recent
+	s.AddText(ctx, general, laptop, "in general")
+
+	if msgs, _ := s.List(ctx, work.ID, 0, 10); len(msgs) != 2 {
+		t.Fatalf("work has %d messages", len(msgs))
+	}
+	if _, err := s.AddText(ctx, 999, laptop, "nowhere"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("write to missing chat = %v", err)
+	}
+
+	chats, _ = s.Chats(ctx)
+	if chats[0].ID != general || chats[1].Count != 2 {
+		t.Fatalf("order/counts = %+v %+v", chats[0], chats[1])
+	}
+
+	if c, err := s.RenameChat(ctx, work.ID, "trabajo"); err != nil || c.Name != "trabajo" {
+		t.Fatalf("rename = %+v, %v", c, err)
+	}
+
+	if fresh, err := s.DeleteChat(ctx, work.ID); err != nil || fresh != nil {
+		t.Fatalf("delete = %+v, %v", fresh, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files", m.File.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("chat file left on disk")
+	}
+
+	fresh, err := s.DeleteChat(ctx, general)
+	if err != nil || fresh == nil || fresh.Name != "general" {
+		t.Fatalf("deleting last chat = %+v, %v", fresh, err)
+	}
+}
+
+func TestMigrateFromV01(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "pneuma.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE files (id TEXT PRIMARY KEY, name TEXT NOT NULL, size INTEGER NOT NULL, mime TEXT NOT NULL, sha256 TEXT NOT NULL)`,
+		`CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, device TEXT NOT NULL, device_os TEXT NOT NULL, user TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', file_id TEXT REFERENCES files(id))`,
+		`INSERT INTO messages (created_at, device, device_os, user, kind, body) VALUES (1, 'old', 'linux', 'me', 'text', 'from v0.1')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	chats, _ := s.Chats(context.Background())
+	if len(chats) != 1 {
+		t.Fatalf("chats = %+v", chats)
+	}
+	msgs, _ := s.List(context.Background(), chats[0].ID, 0, 10)
+	if len(msgs) != 1 || msgs[0].Body != "from v0.1" {
+		t.Fatalf("migrated messages = %+v", msgs)
+	}
 }
