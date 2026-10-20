@@ -113,8 +113,9 @@ button { font: inherit; color: inherit; }
 .logo { image-rendering: pixelated; }
 .brand .wordmark { flex: none; margin-right: auto; }
 
-/* The wordmark burns: each pixel row cycles through the flame palette a
-   step behind the row below it, so the colours climb the letters. */
+/* Hovering the brand sets the wordmark on fire: each pixel row cycles
+   through the flame palette a step behind the row below it, so the colours
+   climb the letters. */
 .wordmark g { fill: var(--flame-1); }
 .wordmark .r1 { fill: var(--flame-2); }
 .wordmark .r2 { fill: var(--flame-3); }
@@ -122,8 +123,7 @@ button { font: inherit; color: inherit; }
 .wordmark .r4 { fill: var(--flame-5); }
 .wordmark .r5 { fill: #ffffff; }
 .wordmark .r6, .wordmark .r7 { fill: var(--flame-1); }
-.anim .wordmark g { animation: burn 2.4s steps(1, end) infinite; animation-delay: calc(var(--i) * -0.4s); }
-.anim .brand:hover .wordmark g { animation-duration: 1.2s; animation-delay: calc(var(--i) * -0.2s); }
+.anim .brand:hover .wordmark g { animation: burn 1.2s steps(1, end) infinite; animation-delay: calc(var(--i) * -0.2s); }
 .wordmark .r0 { --i: 0; } .wordmark .r1 { --i: 1; } .wordmark .r2 { --i: 2; } .wordmark .r3 { --i: 3; }
 .wordmark .r4 { --i: 4; } .wordmark .r5 { --i: 5; } .wordmark .r6 { --i: 6; } .wordmark .r7 { --i: 7; }
 @keyframes burn {

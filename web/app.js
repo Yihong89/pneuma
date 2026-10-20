@@ -945,6 +945,7 @@ ui.anim.addEventListener("change", () => {
   prefs.anim = ui.anim.checked;
   savePrefs();
   applyAnim();
+  scheduleLook();
 });
 ui.enter.addEventListener("change", () => {
   prefs.enterSends = ui.enter.checked;
@@ -1468,6 +1469,115 @@ els.menuBtn.addEventListener("click", () => {
 els.scrim.addEventListener("click", () => {
   els.app.classList.remove("drawer");
   els.scrim.hidden = true;
+});
+
+// ---------- Logo: the eye watches the pointer ----------
+
+// The 16×16 icon with the eye left empty (W); the iris and pupil are drawn
+// as a separate layer, clipped to the white of the eye, so they can move.
+const LOGO = [
+  ".......P........",
+  ".......PP.......",
+  "......PBP.......",
+  "..P...PBBP...P..",
+  "..PP.PBGBP..PP..",
+  "..PBPPBGBP.PBP..",
+  "..PBBPBGGBPPBP..",
+  ".PBGBBGYYGBBGBP.",
+  ".PBGYYRRRRYYGBP.",
+  ".PBGRRWWWWRRGBP.",
+  "PBGRWWWWWWWWRGBP",
+  "PBGRWWWWWWWWRGBP",
+  ".PBGRRWWWWRRGBP.",
+  "..PBGYRRRRYGBP..",
+  "...PBBGGGGBBP...",
+  "....PPPPPPPP....",
+];
+const LOGO_COLORS = { P: "#7c6aa8", B: "#a8bfe6", G: "#b9de6e", Y: "#f4ea5a", R: "#a33a24", W: "#ffffff" };
+const IRIS = [
+  [6, 10, "#a8bfe6"], [9, 10, "#a8bfe6"], [6, 11, "#a8bfe6"], [9, 11, "#a8bfe6"],
+  [7, 10, "#1a0804"], [8, 10, "#1a0804"], [7, 11, "#1a0804"], [8, 11, "#1a0804"],
+];
+const EYE = { x: 8, y: 11 }; // centre of the eye in grid units
+const SVG_NS = "http://www.w3.org/2000/svg";
+let logoSeq = 0;
+
+function svgEl(tag, attrs) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  return n;
+}
+
+function pixelLogo(size, cls) {
+  const id = `eye-clip-${++logoSeq}`;
+  const svg = svgEl("svg", { viewBox: "0 0 16 16", width: size, height: size, "shape-rendering": "crispEdges", class: cls, "aria-hidden": "true" });
+  const clip = svgEl("clipPath", { id });
+  LOGO.forEach((row, y) => {
+    for (const [x, ch] of [...row].entries()) {
+      if (!LOGO_COLORS[ch]) continue;
+      svg.append(svgEl("rect", { x, y, width: 1, height: 1, fill: LOGO_COLORS[ch] }));
+      if (ch === "W") clip.append(svgEl("rect", { x, y, width: 1, height: 1 }));
+    }
+  });
+  const iris = svgEl("g", { class: "iris" });
+  for (const [x, y, fill] of IRIS) iris.append(svgEl("rect", { x, y, width: 1, height: 1, fill }));
+  const clipped = svgEl("g", { "clip-path": `url(#${id})` });
+  clipped.append(iris);
+  svg.append(svgEl("defs", {}), clipped);
+  svg.querySelector("defs").append(clip);
+  return svg;
+}
+
+const watchers = [];
+for (const img of document.querySelectorAll("img.logo")) {
+  const svg = pixelLogo(img.getAttribute("width"), "logo");
+  img.replaceWith(svg);
+  watchers.push({ svg, iris: svg.querySelector(".iris"), dx: 0, dy: 0 });
+}
+
+let pointer = null;
+let lookFrame = 0;
+function look() {
+  lookFrame = 0;
+  for (const w of watchers) {
+    let dx = 0;
+    let dy = 0;
+    const r = w.svg.getBoundingClientRect();
+    if (pointer && r.width && prefs.anim && !reducedMotion) {
+      const cx = r.left + (EYE.x / 16) * r.width;
+      const cy = r.top + (EYE.y / 16) * r.height;
+      const vx = pointer.x - cx;
+      const vy = pointer.y - cy;
+      const dist = Math.hypot(vx, vy);
+      // Close to the eye it looks straight ahead; further away it turns
+      // fully: up to 2 pixels sideways and 1 up or down.
+      const reach = Math.min(1, dist / (r.width * 1.5));
+      if (dist > r.width / 8) {
+        dx = Math.max(-2, Math.min(2, Math.round((vx / dist) * 2.4 * reach)));
+        dy = Math.max(-1, Math.min(1, Math.round((vy / dist) * 1.6 * reach)));
+        // Looking up or down, the lids leave less room sideways.
+        if (dy) dx = Math.max(-1, Math.min(1, dx));
+      }
+    }
+    if (dx !== w.dx || dy !== w.dy) {
+      w.dx = dx;
+      w.dy = dy;
+      w.iris.setAttribute("transform", `translate(${dx} ${dy})`);
+    }
+  }
+}
+const scheduleLook = () => (lookFrame ||= requestAnimationFrame(look));
+document.addEventListener("pointermove", (e) => {
+  pointer = { x: e.clientX, y: e.clientY };
+  scheduleLook();
+}, { passive: true });
+document.documentElement.addEventListener("pointerleave", () => {
+  pointer = null;
+  scheduleLook();
+});
+window.addEventListener("blur", () => {
+  pointer = null;
+  scheduleLook();
 });
 
 // ---------- Boot ----------
