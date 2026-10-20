@@ -93,7 +93,10 @@ func (t *Tailscale) Devices(ctx context.Context) ([]Device, error) {
 		if p.Tags != nil && p.Tags.Len() > 0 && !t.AllowTagged {
 			continue
 		}
-		if u, ok := st.User[p.UserID]; ok && !t.userAllowed(u.LoginName) {
+		// Fail closed: with an allowlist, a peer whose owner we can't
+		// resolve is not shown.
+		u, ok := st.User[p.UserID]
+		if len(t.AllowedUsers) > 0 && (!ok || !t.userAllowed(u.LoginName)) {
 			continue
 		}
 		name, _, _ := strings.Cut(p.DNSName, ".")

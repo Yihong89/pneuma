@@ -87,6 +87,7 @@ func TestDevices(t *testing.T) {
 			key.NewNode().Public(): {DNSName: "phone.x.ts.net.", OS: "android", UserID: 1},
 			key.NewNode().Public(): {DNSName: "prod.x.ts.net.", OS: "linux", Online: true, UserID: 2, Tags: &tags},
 			key.NewNode().Public(): {DNSName: "friend.x.ts.net.", OS: "linux", Online: true, UserID: 3},
+			key.NewNode().Public(): {DNSName: "unknown-owner.x.ts.net.", OS: "linux", Online: true, UserID: 4},
 		},
 		User: map[tailcfg.UserID]tailcfg.UserProfile{
 			1: {LoginName: "me@x.com"},
