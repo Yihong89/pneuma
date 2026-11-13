@@ -31,7 +31,7 @@ pneuma es un programa pequeño que vive en una máquina que ya tienes (un servid
 - **Chats privados.** Pulsa un dispositivo y elige *empezar chat privado*: solo los equipos que están dentro pueden verlo, y eso lo hace cumplir el servidor, no se queda en ocultarlo en la interfaz. Desde el mismo menú puedes añadir más equipos.
 - **Panel de dispositivos.** Lista todos los equipos de tu tailnet: verde relleno es pneuma abierto, borde verde es en línea y gris es desconectado. Puedes renombrar cualquiera ("pixel-8-pro" → "móvil") para todos.
 - **Pestaña de archivos y galería.** Cada chat tiene una vista *archivos* con miniaturas de imágenes y vídeos y una lista de documentos, con descargar y borrar en cada uno. Al pulsar una foto se abre una galería que recorres con ← →, deslizando o con las flechas, y que cierras con la X o Esc.
-- **Caducidad.** Por defecto los archivos se borran a los **30 días** y los mensajes se conservan siempre, porque el texto no ocupa nada. En el historial queda una línea "📎 nombre — caducado". Ambos límites se cambian en los ajustes.
+- **Caducidad.** Por defecto nada caduca: archivos y mensajes se conservan **para siempre**. El borrado automático de archivos (en el historial queda una línea "📎 nombre — caducado") se activa en los ajustes, donde también se regula la conservación de mensajes.
 - **Ajustes.**
   - De cada equipo: idioma (español, inglés o automático), tamaño de texto, si Enter envía, notificaciones de escritorio y animaciones.
   - Para todos: caducidad de mensajes y archivos, tamaño máximo de subida y espacio usado.
@@ -128,7 +128,7 @@ Ajustes compartidos por todos los equipos, desde la app:
 
 | Ajuste | Por defecto |
 |---|---|
-| Borrar archivos tras | 30 días |
+| Borrar archivos tras | nunca (configurable) |
 | Borrar mensajes tras | nunca |
 | Subida máxima | `PNEUMA_MAX_UPLOAD` |
 

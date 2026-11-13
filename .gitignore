@@ -1,3 +1,5 @@
 /pneuma
 /data/
 .env
+
+/logs/

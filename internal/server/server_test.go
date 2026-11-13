@@ -535,7 +535,7 @@ func TestFileRetentionDefault(t *testing.T) {
 		Settings settings `json:"settings"`
 	}
 	json.NewDecoder(do(t, "GET", ts.URL+"/api/settings", "").Body).Decode(&got)
-	if got.Settings.FileRetentionDays != 30 || got.Settings.RetentionDays != 0 {
+	if got.Settings.FileRetentionDays != 0 || got.Settings.RetentionDays != 0 {
 		t.Fatalf("defaults = %+v", got.Settings)
 	}
 }

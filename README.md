@@ -31,7 +31,7 @@ pneuma is one small program that lives on a machine you already have (a home ser
 - **Private chats.** Click a device and choose *start private chat*: only the devices in it can see it, and that is enforced by the server, not just hidden in the UI. Add more devices later from the same menu.
 - **Devices panel.** Lists every device on your tailnet: green filled means pneuma is open, a green outline means online, grey means offline. Rename any of them ("pixel-8-pro" → "phone") for everyone.
 - **Files tab and gallery.** Every chat has a *files* view with a thumbnail grid for images and videos and a list for documents, each with download and delete. Clicking a picture opens a gallery you can browse with ← →, by swiping, or with the arrows, and close with the X or Esc.
-- **Retention.** By default files expire after **30 days** and messages are kept forever, since text costs nothing. Expired files leave a "📎 name — expired" line in the history. Both limits can be changed in the settings.
+- **Retention.** By default nothing expires — files and messages are both kept **forever**. File auto-expiry is opt-in from the settings (expired files leave a "📎 name — expired" line in the history); message retention can be set there too.
 - **Settings.** Per device: language (English / Spanish / auto), text size, whether Enter sends, desktop notifications and animations. For all devices: message and file retention, maximum upload size and storage used.
 - **Installable (PWA)** on Android, macOS, Windows and Linux. On Android, pneuma shows up in the system **Share** menu.
 - **Live updates** over Server-Sent Events, with automatic resync after a reconnect.
@@ -126,7 +126,7 @@ The web app also has these settings, shared by all devices:
 
 | Setting | Default |
 |---|---|
-| Delete files after | 30 days |
+| Delete files after | never (settable) |
 | Delete messages after | never |
 | Max upload | `PNEUMA_MAX_UPLOAD` |
 

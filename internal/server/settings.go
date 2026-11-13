@@ -20,7 +20,7 @@ const (
 
 	// Files are what fill the disk; text is tiny. By default files expire
 	// after a month and messages stay.
-	defaultFileRetention = 30
+	defaultFileRetention = 0 // files live forever unless the user opts into expiry
 
 	MaxAlias     = 40
 	maxRetention = 3650
