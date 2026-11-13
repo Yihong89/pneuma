@@ -99,6 +99,8 @@ type Message struct {
 	Kind Kind   `json:"kind"`
 	Body string `json:"body,omitempty"`
 	File *File  `json:"file,omitempty"`
+	// ReplyTo points at the message this one quotes, same chat only.
+	ReplyTo *int64 `json:"reply_to,omitempty"`
 }
 
 // Store is safe for concurrent use.
@@ -130,7 +132,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	kind       TEXT NOT NULL,
 	body       TEXT NOT NULL DEFAULT '',
 	file_id    TEXT REFERENCES files(id),
-	chat_id    INTEGER NOT NULL DEFAULT 1 REFERENCES chats(id)
+	chat_id    INTEGER NOT NULL DEFAULT 1 REFERENCES chats(id),
+	reply_to   INTEGER
 );
 `
 
@@ -156,6 +159,15 @@ func migrate(db *sql.DB) error {
 	}
 	if hasMembers == 0 {
 		if _, err := db.Exec(`ALTER TABLE chats ADD COLUMN members TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	var hasReply int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'reply_to'`).Scan(&hasReply); err != nil {
+		return err
+	}
+	if hasReply == 0 {
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN reply_to INTEGER`); err != nil {
 			return err
 		}
 	}
@@ -201,12 +213,13 @@ func Open(dir string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// AddText stores a text message.
-func (s *Store) AddText(ctx context.Context, chat int64, from Sender, body string) (*Message, error) {
+// AddText stores a text message, optionally quoting another message in the
+// same chat.
+func (s *Store) AddText(ctx context.Context, chat int64, from Sender, body string, replyTo *int64) (*Message, error) {
 	if err := s.chatExists(ctx, chat); err != nil {
 		return nil, err
 	}
-	return s.insert(ctx, chat, from, KindText, body, nil)
+	return s.insert(ctx, chat, from, KindText, body, nil, replyTo)
 }
 
 // AddFile streams r to disk and stores a file message. If more than max bytes
@@ -246,7 +259,7 @@ func (s *Store) AddFile(ctx context.Context, chat int64, from Sender, name, mime
 		os.Remove(path)
 		return nil, err
 	}
-	m, err := s.insert(ctx, chat, from, KindFile, "", file)
+	m, err := s.insert(ctx, chat, from, KindFile, "", file, nil)
 	if err != nil {
 		s.db.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id)
 		os.Remove(path)
@@ -255,15 +268,15 @@ func (s *Store) AddFile(ctx context.Context, chat int64, from Sender, name, mime
 	return m, nil
 }
 
-func (s *Store) insert(ctx context.Context, chat int64, from Sender, kind Kind, body string, file *File) (*Message, error) {
-	m := &Message{ChatID: chat, CreatedAt: time.Now().UTC().Truncate(time.Millisecond), Sender: from, Kind: kind, Body: body, File: file}
+func (s *Store) insert(ctx context.Context, chat int64, from Sender, kind Kind, body string, file *File, replyTo *int64) (*Message, error) {
+	m := &Message{ChatID: chat, CreatedAt: time.Now().UTC().Truncate(time.Millisecond), Sender: from, Kind: kind, Body: body, File: file, ReplyTo: replyTo}
 	var fileID any
 	if file != nil {
 		fileID = file.ID
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (chat_id, created_at, device, device_os, user, kind, body, file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		chat, m.CreatedAt.UnixMilli(), from.Device, from.OS, from.User, string(kind), body, fileID)
+		`INSERT INTO messages (chat_id, created_at, device, device_os, user, kind, body, file_id, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		chat, m.CreatedAt.UnixMilli(), from.Device, from.OS, from.User, string(kind), body, fileID, replyTo)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +288,7 @@ func (s *Store) insert(ctx context.Context, chat int64, from Sender, kind Kind, 
 
 const selectMessages = `
 SELECT m.id, m.chat_id, m.created_at, m.device, m.device_os, m.user, m.kind, m.body,
-       f.id, f.name, f.size, f.mime, f.sha256
+       f.id, f.name, f.size, f.mime, f.sha256, m.reply_to
 FROM messages m LEFT JOIN files f ON f.id = m.file_id`
 
 // List returns up to limit messages of a chat with id < before (or the
@@ -322,13 +335,18 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 			fsize   sql.NullInt64
 			fmime   sql.NullString
 			fsum    sql.NullString
+			reply   sql.NullInt64
 		)
 		if err := rows.Scan(&m.ID, &m.ChatID, &created, &m.Device, &m.OS, &m.User, &kind, &m.Body,
-			&fid, &fname, &fsize, &fmime, &fsum); err != nil {
+			&fid, &fname, &fsize, &fmime, &fsum, &reply); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = time.UnixMilli(created).UTC()
 		m.Kind = Kind(kind)
+		if reply.Valid {
+			v := reply.Int64
+			m.ReplyTo = &v
+		}
 		if fid.Valid {
 			m.File = &File{ID: fid.String, Name: fname.String, Size: fsize.Int64, Mime: fmime.String, SHA256: fsum.String}
 		}

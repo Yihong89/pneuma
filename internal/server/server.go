@@ -142,7 +142,8 @@ func (s *Server) handleText(w http.ResponseWriter, r *http.Request) {
 	}
 	chat := c.ID
 	var req struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		ReplyTo *int64 `json:"reply_to"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxTextLen+1024)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -156,7 +157,16 @@ func (s *Server) handleText(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "message too long", http.StatusRequestEntityTooLarge)
 		return
 	}
-	m, err := s.Store.AddText(r.Context(), chat, ident.SenderFrom(r.Context()), req.Text)
+	var reply *int64
+	if req.ReplyTo != nil && *req.ReplyTo > 0 {
+		q, err := s.Store.Get(r.Context(), *req.ReplyTo)
+		if err != nil || q.ChatID != chat {
+			http.Error(w, "cannot quote that message", http.StatusBadRequest)
+			return
+		}
+		reply = req.ReplyTo
+	}
+	m, err := s.Store.AddText(r.Context(), chat, ident.SenderFrom(r.Context()), req.Text, reply)
 	if err != nil {
 		storeError(w, r, err)
 		return
@@ -255,7 +265,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if text := strings.Join(parts, "\n"); text != "" {
-		m, err := s.Store.AddText(r.Context(), chat, ident.SenderFrom(r.Context()), text)
+		m, err := s.Store.AddText(r.Context(), chat, ident.SenderFrom(r.Context()), text, nil)
 		if err != nil {
 			serverError(w, err)
 			return

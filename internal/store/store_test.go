@@ -29,7 +29,7 @@ func TestTextAndPagination(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	for i := range 5 {
-		if _, err := s.AddText(ctx, 1, laptop, strings.Repeat("x", i+1)); err != nil {
+		if _, err := s.AddText(ctx, 1, laptop, strings.Repeat("x", i+1), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.AddText(context.Background(), 1, laptop, "still here")
+	s.AddText(context.Background(), 1, laptop, "still here", nil)
 	s.Close()
 
 	s, err = Open(dir)
@@ -149,15 +149,15 @@ func TestChats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.AddText(ctx, work.ID, laptop, "in work")
+	s.AddText(ctx, work.ID, laptop, "in work", nil)
 	m, _ := s.AddFile(ctx, work.ID, laptop, "a.txt", "text/plain", strings.NewReader("a"), 10)
 	time.Sleep(5 * time.Millisecond) // make "general" strictly the most recent
-	s.AddText(ctx, general, laptop, "in general")
+	s.AddText(ctx, general, laptop, "in general", nil)
 
 	if msgs, _ := s.List(ctx, work.ID, 0, 10); len(msgs) != 2 {
 		t.Fatalf("work has %d messages", len(msgs))
 	}
-	if _, err := s.AddText(ctx, 999, laptop, "nowhere"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddText(ctx, 999, laptop, "nowhere", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("write to missing chat = %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestSettingsAliasesRetention(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	cut := time.Now()
 	time.Sleep(5 * time.Millisecond)
-	s.AddText(ctx, 1, laptop, "new")
+	s.AddText(ctx, 1, laptop, "new", nil)
 	n, err := s.DeleteOlderThan(ctx, cut)
 	if err != nil || n != 1 {
 		t.Fatalf("deleted %d, %v", n, err)
@@ -259,7 +259,7 @@ func TestExpireFiles(t *testing.T) {
 	s, dir := open(t)
 	ctx := context.Background()
 	m, _ := s.AddFile(ctx, 1, laptop, "old.zip", "application/zip", strings.NewReader("zip"), 10)
-	s.AddText(ctx, 1, laptop, "keep me")
+	s.AddText(ctx, 1, laptop, "keep me", nil)
 	time.Sleep(5 * time.Millisecond)
 	n, err := s.ExpireFilesOlderThan(ctx, time.Now())
 	if err != nil || n != 1 {

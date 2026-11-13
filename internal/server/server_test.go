@@ -492,6 +492,43 @@ func TestPrivateEventsStayPrivate(t *testing.T) {
 	t.Fatal("stream ended before the public message")
 }
 
+func TestQuoteMessage(t *testing.T) {
+	ts := newServer(t, ident.Dev{})
+
+	var first store.Message
+	res := do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"original"}`)
+	json.NewDecoder(res.Body).Decode(&first)
+
+	// Quoting an existing message round-trips its id.
+	var reply store.Message
+	res = do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"citing you","reply_to":`+strconv.FormatInt(first.ID, 10)+`}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("reply = %d", res.StatusCode)
+	}
+	json.NewDecoder(res.Body).Decode(&reply)
+	if reply.ReplyTo == nil || *reply.ReplyTo != first.ID {
+		t.Fatalf("reply_to = %v, want %d", reply.ReplyTo, first.ID)
+	}
+	// It comes back on listing too.
+	var msgs []store.Message
+	json.NewDecoder(do(t, "GET", ts.URL+"/api/chats/1/messages", "").Body).Decode(&msgs)
+	if msgs[len(msgs)-1].ReplyTo == nil || *msgs[len(msgs)-1].ReplyTo != first.ID {
+		t.Fatalf("listed reply lost reply_to: %+v", msgs[len(msgs)-1])
+	}
+
+	// Quoting a missing message is a bad request, not a silent drop.
+	if res := do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"dangling","reply_to":999999}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("dangling quote = %d, want 400", res.StatusCode)
+	}
+	// Quoting across chats is refused: the original lives in chat 1.
+	var other store.Chat
+	json.NewDecoder(do(t, "POST", ts.URL+"/api/chats", `{"name":"other"}`).Body).Decode(&other)
+	otherID := strconv.FormatInt(other.ID, 10)
+	if res := do(t, "POST", ts.URL+"/api/chats/"+otherID+"/messages", `{"text":"wrong chat","reply_to":`+strconv.FormatInt(first.ID, 10)+`}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("cross-chat quote = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestFileRetentionDefault(t *testing.T) {
 	ts := newServer(t, ident.Dev{})
 	var got struct {

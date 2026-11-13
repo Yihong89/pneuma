@@ -11,6 +11,9 @@ const els = {
   loader: $("loader"),
   input: $("input"),
   composer: $("composer"),
+  quoteBar: $("quote-bar"),
+  quoteText: $("quote-text"),
+  quoteCancel: $("quote-cancel"),
   attach: $("attach"),
   fileInput: $("file-input"),
   drop: $("drop"),
@@ -81,6 +84,9 @@ const STRINGS = {
     copyFailed: "couldn't copy",
     copy: "copy",
     copyImage: "copy image",
+    quote: "quote",
+    cancelQuote: "cancel quote",
+    quotedGone: "cited message unavailable",
     download: "download",
     delete: "delete",
     confirmDelete: "sure?",
@@ -146,6 +152,9 @@ const STRINGS = {
     copyFailed: "no se pudo copiar",
     copy: "copiar",
     copyImage: "copiar imagen",
+    quote: "citar",
+    cancelQuote: "cancelar cita",
+    quotedGone: "mensaje citado no disponible",
     download: "descargar",
     delete: "borrar",
     confirmDelete: "¿seguro?",
@@ -243,6 +252,7 @@ const state = {
   me: null,
   maxUpload: 0,
   canDelete: true, // server tells us; false hides delete and rename controls
+  quote: null, // message being cited by the draft in the composer
   chats: new Map(), // id -> chat
   chat: null, // current chat id
   unread: new Map(), // chat id -> count
@@ -418,6 +428,7 @@ function renderMessage(m) {
     actions.append(el("a", { href: fileURL(f, true), download: f.name }, t.download));
   }
 
+  actions.append(el("button", { type: "button", onclick: () => setQuote(m) }, t.quote));
   if (state.canDelete) {
     actions.append(
       confirmButton(t.delete, t.confirmDelete, "button", async () => {
@@ -427,7 +438,57 @@ function renderMessage(m) {
     );
   }
 
-  return el("div", { class: `msg${mine ? " mine" : ""}`, "data-id": m.id, style: `--c:${color}` }, head, bubble, actions);
+  // Cited original, resolved from the loaded window; click jumps to it.
+  let quoteNode = null;
+  if (m.reply_to) {
+    const q = state.msgs.get(m.reply_to);
+    if (q) {
+      const who = displayName(q.user ? q.user.split("@")[0] : q.device);
+      const raw = q.kind === "file" ? `📎 ${q.file.name}` : q.body.replace(/\s+/g, " ").trim();
+      const snippet = raw.length > 120 ? raw.slice(0, 120) + "…" : raw;
+      quoteNode = el("div", { class: "quoted" }, el("b", {}, who), " " + snippet);
+      quoteNode.addEventListener("click", () => jumpTo(q.id));
+    } else {
+      quoteNode = el("div", { class: "quoted gone" }, t.quotedGone);
+    }
+  }
+
+  const node = el("div", { class: `msg${mine ? " mine" : ""}`, "data-id": m.id, style: `--c:${color}` }, head, quoteNode, bubble, actions);
+  onMenu(node, () => [{ label: t.quote, action: () => setQuote(m) }]);
+  return node;
+}
+
+// ---------- Quoting ----------
+
+// setQuote marks a message as cited by the draft; the composer shows a bar.
+function setQuote(m) {
+  state.quote = m;
+  renderQuoteBar();
+  els.input.focus();
+}
+
+function renderQuoteBar() {
+  const q = state.quote;
+  els.quoteBar.hidden = !q;
+  if (!q) return;
+  const who = displayName(q.user ? q.user.split("@")[0] : q.device);
+  const raw = q.kind === "file" ? `📎 ${q.file.name}` : q.body.replace(/\s+/g, " ").trim();
+  const snippet = raw.length > 80 ? raw.slice(0, 80) + "…" : raw;
+  els.quoteText.textContent = `${who}: ${snippet}`;
+}
+
+function clearQuote() {
+  state.quote = null;
+  renderQuoteBar();
+}
+
+// jumpTo scrolls to a cited message already in the window and flashes it.
+function jumpTo(id) {
+  const node = els.messages.querySelector(`.msg[data-id="${id}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "center" });
+  node.classList.add("flash");
+  setTimeout(() => node.classList.remove("flash"), 1500);
 }
 
 // A button that needs a second click within 3s to act.
@@ -628,6 +689,7 @@ function selectChat(id) {
   els.scrim.hidden = true;
   if (id === state.chat) return;
   state.chat = id;
+  clearQuote(); // a quote must cite this chat, not the one you left
   state.unread.delete(id);
   storage.set("pneuma.chat", String(id));
   state.msgs.clear();
@@ -675,6 +737,13 @@ els.newChat.addEventListener("click", () => {
   els.newChatForm.hidden = false;
   els.newChatInput.value = "";
   els.newChatInput.focus();
+});
+els.quoteCancel.addEventListener("click", clearQuote);
+els.input.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.quote) {
+    e.stopPropagation();
+    clearQuote();
+  }
 });
 els.newChatInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") els.newChatForm.hidden = true;
@@ -1064,7 +1133,10 @@ function setOnline(on) {
 async function sendText(text) {
   if (!text.trim()) return false;
   try {
-    const m = await request("POST", `/api/chats/${state.chat}/messages`, { text });
+    const body = { text };
+    if (state.quote && state.quote.chat_id === state.chat) body.reply_to = state.quote.id;
+    const m = await request("POST", `/api/chats/${state.chat}/messages`, body);
+    clearQuote();
     if (addMessages([m])) render();
     scrollToBottom();
     return true;

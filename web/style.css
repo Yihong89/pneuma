@@ -732,6 +732,50 @@ button { font: inherit; color: inherit; }
   .bubble.filebox { min-width: 0; }
   .filebox .name { max-width: 22ch; }
   .composer { margin: 0 6px 6px; }
+  .quote-bar { margin: 6px 6px 0; }
+}
+
+/* ---- quote replies ---- */
+
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--line-strong);
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 13px;
+}
+.quote-bar .quote-prompt { color: var(--flame-3); }
+.quote-bar .quote-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg .quoted {
+  margin: 2px 0 3px 10px;
+  padding: 3px 8px;
+  border-left: 2px solid var(--c, var(--line-strong));
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.msg .quoted:hover { color: var(--text-2); }
+.msg .quoted b { color: var(--text-2); font-weight: 700; }
+.msg .quoted.gone { cursor: default; font-style: italic; }
+
+.msg.flash { animation: msgflash 1.5s ease-out; }
+@keyframes msgflash {
+  0%, 55% { background: color-mix(in srgb, var(--flame-6) 22%, transparent); }
+  100% { background: transparent; }
 }
 
 @media (prefers-reduced-motion: reduce) {
