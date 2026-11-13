@@ -259,11 +259,12 @@ const state = {
 
 const displayName = (device) => state.aliases[device] || device;
 
-// Chat members are stable node IDs; show them by (aliased) device name.
+// Chat members are account IDs; show them by (aliased) display name.
 function memberName(id) {
-  if (id === state.me?.id) return displayName(state.me.device);
   const d = state.devices.find((x) => x.id === id);
-  return d ? displayName(d.name) : "?";
+  if (d) return displayName(d.name);
+  if (id === state.me?.id) return displayName(state.me.device);
+  return "?";
 }
 
 // ---------- Formatting ----------
@@ -805,7 +806,7 @@ window.addEventListener("resize", closeMenu);
 async function loadDevices() {
   try {
     state.devices = await getJSON("/api/devices");
-    state.active = new Set(state.devices.filter((d) => d.active).map((d) => d.name));
+    state.active = new Set(state.devices.filter((d) => d.active).map((d) => d.id));
     renderDevices();
     renderChats(); // member names come from the device list
   } catch (err) {
@@ -814,13 +815,13 @@ async function loadDevices() {
 }
 
 function renderDevices() {
-  const me = state.me?.device;
-  const rank = (d) => (d.name === me ? 0 : state.active.has(d.name) ? 1 : d.online ? 2 : 3);
+  const me = state.me;
+  const rank = (d) => (d.id === me?.id ? 0 : state.active.has(d.id) ? 1 : d.online ? 2 : 3);
   const list = [...state.devices].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   els.deviceList.replaceChildren(
     ...list.map((d) => {
-      const here = d.name === me;
-      const active = here || state.active.has(d.name);
+      const here = d.id === me?.id;
+      const active = here || state.active.has(d.id);
       const label = here ? t.here : active ? t.open : d.online ? t.idle : t.away;
       const cls = `${active ? "active" : d.online ? "" : "offline"}${here ? " here" : ""}`;
       const name = el("span", { class: "name", title: [d.name, d.os].filter(Boolean).join(" · ") }, displayName(d.name));
@@ -1034,7 +1035,7 @@ function connect() {
   es.addEventListener("chat_delete", (e) => chatDeleted(JSON.parse(e.data).id));
   es.addEventListener("presence", (e) => {
     const active = JSON.parse(e.data).active;
-    const unknown = active.some((name) => !state.devices.some((d) => d.name === name));
+    const unknown = active.some((id) => !state.devices.some((d) => d.id === id));
     state.active = new Set(active);
     if (unknown) loadDevices();
     else renderDevices();

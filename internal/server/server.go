@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -367,7 +368,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	me := ident.SenderFrom(r.Context())
-	events, unsubscribe, joined := s.Hub.Subscribe(me.Device, me.ID)
+	events, unsubscribe, joined := s.Hub.Subscribe(me.ID)
 	defer func() {
 		if unsubscribe() {
 			s.publishPresence()
@@ -596,19 +597,19 @@ func cleanChatName(name string) (string, bool) {
 
 // ---- devices ----
 
-// knownDevice reports whether id is a device that may use pneuma right now:
-// a current tailnet peer passing the access rules, or the requester itself.
-// In dev mode, any device that has pneuma open counts.
-func (s *Server) knownDevice(r *http.Request, id string) bool {
-	if id == "" {
+// knownDevice reports whether the account may use pneuma right now: a
+// current tailnet user passing the access rules, or the requester
+// themselves. In dev mode, anyone with pneuma open counts.
+func (s *Server) knownDevice(r *http.Request, want string) bool {
+	if want == "" {
 		return false
 	}
-	if id == ident.SenderFrom(r.Context()).ID {
+	if want == ident.SenderFrom(r.Context()).ID {
 		return true
 	}
 	if s.Devices == nil {
-		for _, name := range s.Hub.Active() {
-			if ident.DevID(name) == id {
+		for _, id := range s.Hub.Active() {
+			if id == want {
 				return true
 			}
 		}
@@ -620,7 +621,7 @@ func (s *Server) knownDevice(r *http.Request, id string) bool {
 		return false
 	}
 	for _, d := range devices {
-		if d.ID == id {
+		if d.ID == want {
 			return true
 		}
 	}
@@ -642,29 +643,32 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	active := map[string]bool{}
-	for _, d := range s.Hub.Active() {
-		active[d] = true
+	for _, id := range s.Hub.Active() {
+		active[id] = true
 	}
 	out := []deviceStatus{}
 	for _, d := range devices {
-		out = append(out, deviceStatus{Device: d, Active: active[d.Name]})
-		delete(active, d.Name)
+		out = append(out, deviceStatus{Device: d, Active: active[d.ID]})
+		delete(active, d.ID)
 	}
-	// The requesting device (and, in dev mode, everything) may be missing
-	// from the peer list; anything with pneuma open is online by definition.
+	// Someone with pneuma open may be missing from the list (dev mode's
+	// fake logins, a peer the lister couldn't resolve); they are online by
+	// definition, so they still get a row.
 	me := ident.SenderFrom(r.Context())
-	for _, name := range s.Hub.Active() {
-		if active[name] {
-			os := ""
-			if name == me.Device {
-				os = me.OS
-			}
-			id := ident.DevID(name)
-			if name == me.Device {
-				id = me.ID
-			}
-			out = append(out, deviceStatus{Device: ident.Device{ID: id, Name: name, OS: os, Online: true}, Active: true})
+	orphans := make([]string, 0, len(active))
+	for id := range active {
+		orphans = append(orphans, id)
+	}
+	slices.Sort(orphans)
+	for _, id := range orphans {
+		name, os := id, ""
+		if dev := ident.DevName(id); dev != "" {
+			name = dev
 		}
+		if id == me.ID {
+			name, os = me.Device, me.OS
+		}
+		out = append(out, deviceStatus{Device: ident.Device{ID: id, Name: name, OS: os, Online: true}, Active: true})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

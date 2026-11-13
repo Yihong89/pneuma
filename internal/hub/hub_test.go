@@ -4,8 +4,8 @@ import "testing"
 
 func TestAudience(t *testing.T) {
 	h := New()
-	a, _, _ := h.Subscribe("laptop", "id-laptop")
-	b, _, _ := h.Subscribe("phone", "id-phone")
+	a, _, _ := h.Subscribe("id-laptop")
+	b, _, _ := h.Subscribe("id-phone")
 	h.Publish(Event{Type: "message", Audience: []string{"id-laptop"}})
 	h.Publish(Event{Type: "presence"})
 	if e := <-a; e.Type != "message" {

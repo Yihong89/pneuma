@@ -28,12 +28,13 @@ type LocalClient interface {
 	Status(ctx context.Context) (*ipnstate.Status, error)
 }
 
-// Device is a machine on the tailnet that may use pneuma.
+// Device is an entry in the who's-who of pneuma: one per person, keyed by
+// account. (The type name and JSON shape stay for the web app.)
 type Device struct {
-	ID     string `json:"id"` // stable node ID
+	ID     string `json:"id"` // account ID ("user:<login>")
 	Name   string `json:"name"`
-	OS     string `json:"os"`
-	Online bool   `json:"online"` // connected to the tailnet
+	OS     string `json:"os"`     // every OS that person's devices run
+	Online bool   `json:"online"` // any of their devices is connected
 }
 
 // DeviceLister lists the devices that could talk to pneuma.
@@ -42,7 +43,7 @@ type DeviceLister interface {
 }
 
 // Tailscale identifies peers through the tailnet's WhoIs API, so there is
-// nothing to log in to: the device is the credential.
+// nothing to log in to: the device's owner account is the credential.
 type Tailscale struct {
 	Client LocalClient
 	// AllowTagged lets tagged nodes (servers, CI boxes...) in. Off by default
@@ -50,6 +51,21 @@ type Tailscale struct {
 	AllowTagged bool
 	// AllowedUsers, when non-empty, restricts access to these login names.
 	AllowedUsers []string
+}
+
+// accountID is the stable membership key: a person, identified by their
+// lowercased tailnet login. Multiple devices of one account share it, so
+// chats and presence are per person rather than per machine.
+func accountID(login string) string { return "user:" + strings.ToLower(login) }
+
+// personName is the display label for an account: the local part of its
+// email, which aliases can then prettify ("zhangyhzju" → "爸爸").
+func personName(login string) string {
+	name, _, _ := strings.Cut(login, "@")
+	if name == "" {
+		return login
+	}
+	return name
 }
 
 func (t *Tailscale) Identify(r *http.Request) (store.Sender, error) {
@@ -75,36 +91,62 @@ func (t *Tailscale) Identify(r *http.Request) (store.Sender, error) {
 	if who.Node.Hostinfo.Valid() {
 		os = who.Node.Hostinfo.OS()
 	}
-	return store.Sender{ID: string(who.Node.StableID), Device: device, OS: strings.ToLower(os), User: login}, nil
+	return store.Sender{ID: accountID(login), Device: device, OS: strings.ToLower(os), User: login}, nil
 }
 
 func (t *Tailscale) userAllowed(login string) bool {
-	return len(t.AllowedUsers) == 0 || slices.Contains(t.AllowedUsers, login)
+	if len(t.AllowedUsers) == 0 {
+		return true
+	}
+	login = strings.ToLower(login)
+	return slices.ContainsFunc(t.AllowedUsers, func(u string) bool {
+		return strings.ToLower(u) == login
+	})
 }
 
-// Devices lists the tailnet devices that pass the same rules as Identify,
-// so pneuma never shows a machine that couldn't actually use it.
+// Devices lists the people whose devices may use pneuma, aggregating every
+// tailnet peer under its owner's account, with the same rules as Identify.
 func (t *Tailscale) Devices(ctx context.Context) ([]Device, error) {
 	st, err := t.Client.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []Device
+	type person struct {
+		dev  Device
+		oses map[string]bool
+	}
+	by := map[string]*person{}
 	for _, p := range st.Peer {
 		if p.Tags != nil && p.Tags.Len() > 0 && !t.AllowTagged {
 			continue
 		}
-		// Fail closed: with an allowlist, a peer whose owner we can't
-		// resolve is not shown.
+		// Fail closed: a peer whose owner we can't resolve is nobody's
+		// device and gets no seat at the table.
 		u, ok := st.User[p.UserID]
-		if len(t.AllowedUsers) > 0 && (!ok || !t.userAllowed(u.LoginName)) {
+		if !ok || u.LoginName == "" || !t.userAllowed(u.LoginName) {
 			continue
 		}
-		name, _, _ := strings.Cut(p.DNSName, ".")
-		if name == "" {
-			name = p.HostName
+		login := u.LoginName
+		id := accountID(login)
+		pr, seen := by[id]
+		if !seen {
+			pr = &person{dev: Device{ID: id, Name: personName(strings.ToLower(login))}, oses: map[string]bool{}}
+			by[id] = pr
 		}
-		out = append(out, Device{ID: string(p.ID), Name: name, OS: strings.ToLower(p.OS), Online: p.Online})
+		pr.dev.Online = pr.dev.Online || p.Online
+		if p.OS != "" {
+			pr.oses[strings.ToLower(p.OS)] = true
+		}
+	}
+	out := make([]Device, 0, len(by))
+	for _, pr := range by {
+		oses := make([]string, 0, len(pr.oses))
+		for o := range pr.oses {
+			oses = append(oses, o)
+		}
+		slices.Sort(oses)
+		pr.dev.OS = strings.Join(oses, "/")
+		out = append(out, pr.dev)
 	}
 	slices.SortFunc(out, func(a, b Device) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
@@ -132,6 +174,15 @@ func (Dev) Identify(r *http.Request) (store.Sender, error) {
 
 // DevID is the stable ID a device gets in dev mode.
 func DevID(device string) string { return "dev:" + device }
+
+// DevName is the fake device name a dev-mode ID carries, or "" if the ID
+// is not a dev one.
+func DevName(id string) string {
+	if name, ok := strings.CutPrefix(id, "dev:"); ok {
+		return name
+	}
+	return ""
+}
 
 type ctxKey struct{}
 

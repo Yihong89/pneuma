@@ -40,11 +40,13 @@ const (
 	KindExpired Kind = "expired"
 )
 
-// Sender identifies the device that created a message.
+// Sender identifies the person (and the device they typed on) that created
+// a message.
 type Sender struct {
-	// ID is the device's stable tailnet node ID. Unlike Device (its
-	// MagicDNS name, which a different machine could take over later) it
-	// never changes, so it is what chat membership is based on. It is not
+	// ID is the account membership key ("user:<login>"). Unlike Device
+	// (the hostname the message was sent from, which a different machine
+	// could take over later) it identifies a person across their
+	// machines, so it is what chat membership is based on. It is not
 	// stored with messages.
 	ID     string `json:"id,omitempty"`
 	Device string `json:"device"`
@@ -69,8 +71,8 @@ type Chat struct {
 	// LastAt is the time of the newest message, or CreatedAt if empty.
 	LastAt time.Time `json:"last_at"`
 	Count  int64     `json:"count"`
-	// Members restricts the chat to these devices, by stable node ID.
-	// Empty means every device on the tailnet can see it.
+	// Members restricts the chat to these accounts, by membership ID
+	// ("user:<login>"). Empty means every device on the tailnet can see it.
 	Members []string `json:"members,omitempty"`
 }
 
@@ -440,7 +442,7 @@ func (s *Store) CreateChat(ctx context.Context, name string, members ...string) 
 	return s.Chat(ctx, id)
 }
 
-// AddMember gives a device (by stable ID) access to a private chat.
+// AddMember gives an account (by membership ID) access to a private chat.
 func (s *Store) AddMember(ctx context.Context, id int64, device string) (*Chat, error) {
 	c, err := s.Chat(ctx, id)
 	if err != nil {
