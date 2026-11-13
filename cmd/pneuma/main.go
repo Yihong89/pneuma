@@ -37,6 +37,7 @@ func main() {
 		maxSize  = flag.String("max-upload", env("PNEUMA_MAX_UPLOAD", "4GB"), "maximum upload size per request")
 		allowTag = flag.Bool("allow-tagged", envBool("PNEUMA_ALLOW_TAGGED"), "allow tagged nodes (servers) to use pneuma")
 		users    = flag.String("allowed-users", os.Getenv("PNEUMA_ALLOWED_USERS"), "comma-separated tailnet logins allowed in (default: everyone)")
+		deleters = flag.String("deleters", os.Getenv("PNEUMA_DELETERS"), "comma-separated tailnet logins allowed to delete messages, chats and aliases (default: everyone)")
 	)
 	flag.Parse()
 
@@ -50,7 +51,7 @@ func main() {
 	}
 	defer st.Close()
 
-	srv := &server.Server{Store: st, Hub: hub.New(), Web: web.FS, MaxUpload: maxUpload}
+	srv := &server.Server{Store: st, Hub: hub.New(), Web: web.FS, MaxUpload: maxUpload, Deleters: splitList(*deleters)}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

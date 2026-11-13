@@ -502,3 +502,75 @@ func TestFileRetentionDefault(t *testing.T) {
 		t.Fatalf("defaults = %+v", got.Settings)
 	}
 }
+
+// fixedIdent always answers as one sender so a test can switch who a
+// request comes from without a tailnet.
+type fixedIdent struct{ sender store.Sender }
+
+func (f *fixedIdent) Identify(*http.Request) (store.Sender, error) { return f.sender, nil }
+
+func TestDeletionRights(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	who := &fixedIdent{sender: store.Sender{ID: "user:boss@x.com", User: "boss@x.com", Device: "mac"}}
+	s := &Server{
+		Store:     st,
+		Hub:       hub.New(),
+		Ident:     who,
+		Web:       fstest.MapFS{"index.html": {Data: []byte("<h1>pneuma</h1>")}},
+		MaxUpload: 1 << 20,
+		// Deliberate mixed case: matching must be case insensitive.
+		Deleters: []string{"Boss@x.com", "partner@x.com"},
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	canDelete := func() bool {
+		var me struct {
+			CanDelete bool `json:"can_delete"`
+		}
+		json.NewDecoder(do(t, "GET", ts.URL+"/api/me", "").Body).Decode(&me)
+		return me.CanDelete
+	}
+
+	if !canDelete() {
+		t.Fatal("a deleter should be told they can delete")
+	}
+	var m store.Message
+	res := do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"keep or drop"}`)
+	json.NewDecoder(res.Body).Decode(&m)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("post = %d", res.StatusCode)
+	}
+	msgID := "/api/messages/" + strconv.FormatInt(m.ID, 10)
+
+	// Someone off the list: still chats, never deletes.
+	who.sender = store.Sender{ID: "user:kid@x.com", User: "kid@x.com", Device: "ipad"}
+	if canDelete() {
+		t.Fatal("a non-deleter should be told they cannot delete")
+	}
+	if res := do(t, "POST", ts.URL+"/api/chats/1/messages", `{"text":"hi"}`); res.StatusCode != http.StatusCreated {
+		t.Fatalf("non-deleter post = %d, want 201", res.StatusCode)
+	}
+	if res := do(t, "DELETE", ts.URL+msgID, ""); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-deleter delete message = %d, want 403", res.StatusCode)
+	}
+	if res := do(t, "DELETE", ts.URL+"/api/chats/1", ""); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-deleter delete chat = %d, want 403", res.StatusCode)
+	}
+	if res := do(t, "PUT", ts.URL+"/api/devices/ipad/alias", `{"alias":"tablet"}`); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-deleter rename = %d, want 403", res.StatusCode)
+	}
+
+	// Back to the deleter: deletes and renames go through.
+	who.sender = store.Sender{ID: "user:boss@x.com", User: "boss@x.com", Device: "mac"}
+	if res := do(t, "PUT", ts.URL+"/api/devices/ipad/alias", `{"alias":"tablet"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("deleter rename = %d, want 200", res.StatusCode)
+	}
+	if res := do(t, "DELETE", ts.URL+msgID, ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("deleter delete = %d, want 204", res.StatusCode)
+	}
+}

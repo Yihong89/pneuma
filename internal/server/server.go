@@ -35,6 +35,9 @@ type Server struct {
 	// Devices lists the tailnet's devices; nil in dev mode, where only
 	// devices with pneuma open are shown.
 	Devices ident.DeviceLister
+	// Deleters are the lowercased tailnet logins allowed to delete
+	// messages, chats and name aliases. Empty means everyone may delete.
+	Deleters []string
 }
 
 // MaxChatName bounds a chat's name.
@@ -97,6 +100,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sender":     ident.SenderFrom(r.Context()),
 		"max_upload": s.maxUpload(r.Context()),
+		"can_delete": s.mayDelete(ident.SenderFrom(r.Context())),
+	})
+}
+
+// mayDelete reports whether the sender may delete messages, chats and
+// aliases; with no Deleters configured everyone may.
+func (s *Server) mayDelete(me store.Sender) bool {
+	if len(s.Deleters) == 0 {
+		return true
+	}
+	login := strings.ToLower(me.User)
+	return slices.ContainsFunc(s.Deleters, func(d string) bool {
+		return strings.ToLower(d) == login
 	})
 }
 
@@ -159,6 +175,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	var c *store.Chat
 	if err == nil {
 		c, err = s.chatFor(r, m.ChatID)
+	}
+	if err == nil && !s.mayDelete(ident.SenderFrom(r.Context())) {
+		http.Error(w, "you are not allowed to delete messages", http.StatusForbidden)
+		return
 	}
 	if err == nil {
 		err = s.Store.Delete(r.Context(), id)
@@ -567,6 +587,10 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.visibleChat(w, r)
 	if !ok {
+		return
+	}
+	if !s.mayDelete(ident.SenderFrom(r.Context())) {
+		http.Error(w, "you are not allowed to delete chats", http.StatusForbidden)
 		return
 	}
 	fresh, err := s.Store.DeleteChat(r.Context(), c.ID)

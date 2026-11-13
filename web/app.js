@@ -242,6 +242,7 @@ const PAGE = 50;
 const state = {
   me: null,
   maxUpload: 0,
+  canDelete: true, // server tells us; false hides delete and rename controls
   chats: new Map(), // id -> chat
   chat: null, // current chat id
   unread: new Map(), // chat id -> count
@@ -373,7 +374,8 @@ function renderMessage(m) {
     "div",
     { class: "head" },
     el("span", { class: "sq" }),
-    el("span", { class: "device", title: m.device }, displayName(m.device)),
+    // Sign with the person (alias of their account), keep the device as tooltip.
+    el("span", { class: "device", title: m.device }, displayName(m.user ? m.user.split("@")[0] : m.device)),
     el("span", {}, timeFmt.format(when)),
   );
 
@@ -416,12 +418,14 @@ function renderMessage(m) {
     actions.append(el("a", { href: fileURL(f, true), download: f.name }, t.download));
   }
 
-  actions.append(
-    confirmButton(t.delete, t.confirmDelete, "button", async () => {
-      await request("DELETE", `/api/messages/${m.id}`).catch(() => {});
-      removeMessage(m.id);
-    }),
-  );
+  if (state.canDelete) {
+    actions.append(
+      confirmButton(t.delete, t.confirmDelete, "button", async () => {
+        await request("DELETE", `/api/messages/${m.id}`).catch(() => {});
+        removeMessage(m.id);
+      }),
+    );
+  }
 
   return el("div", { class: `msg${mine ? " mine" : ""}`, "data-id": m.id, style: `--c:${color}` }, head, bubble, actions);
 }
@@ -590,7 +594,9 @@ function renderChats() {
     );
     onMenu(item, () => [
       { label: t.renameChat, action: () => renameChat(c.id, item.querySelector(".name")) },
-      { label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) },
+      ...(state.canDelete
+        ? [{ label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) }]
+        : []),
     ]);
     return item;
   });
@@ -746,7 +752,9 @@ els.chatTitle.addEventListener("contextmenu", (e) => {
   if (!c) return;
   openMenu(e.clientX, e.clientY, [
     { label: t.renameChat, action: () => renameChat(c.id) },
-    { label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) },
+    ...(state.canDelete
+      ? [{ label: t.deleteChat, confirm: t.deleteChatConfirm, danger: true, action: () => deleteChat(c.id) }]
+      : []),
   ]);
 });
 
@@ -835,8 +843,12 @@ function renderDevices() {
           ...(!here && current?.members && !current.members.includes(d.id)
             ? [{ label: t.addToChat(current.name), action: () => addMember(current.id, d.id) }]
             : []),
-          { label: t.renameDevice, action: rename },
-          ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
+          ...(state.canDelete
+            ? [
+                { label: t.renameDevice, action: rename },
+                ...(state.aliases[d.name] ? [{ label: `${t.resetName} (${d.name})`, action: () => setAlias(d.name, "") }] : []),
+              ]
+            : []),
         ];
       };
       onMenu(item, items);
@@ -1588,6 +1600,7 @@ async function boot() {
     const me = await getJSON("/api/me");
     state.me = me.sender;
     state.maxUpload = me.max_upload;
+    state.canDelete = me.can_delete !== false;
   } catch (err) {
     els.empty.hidden = false;
     els.emptyText.textContent = String(err.message);

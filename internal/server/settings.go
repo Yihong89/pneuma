@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ericpastorm/pneuma/internal/ident"
 )
 
 // Settings shared by every device, editable from the web app.
@@ -127,6 +129,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAlias(w http.ResponseWriter, r *http.Request) {
+	if !s.mayDelete(ident.SenderFrom(r.Context())) {
+		http.Error(w, "you are not allowed to rename people", http.StatusForbidden)
+		return
+	}
 	device := r.PathValue("name")
 	var req struct {
 		Alias string `json:"alias"`
